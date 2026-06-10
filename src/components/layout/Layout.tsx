@@ -6,6 +6,7 @@ import {
   FileText, UsersRound, Receipt
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
+import { APP_VERSION } from '@/utils/version';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -66,6 +67,7 @@ export function Layout({ children }: LayoutProps) {
           <button onClick={logout} className="flex items-center gap-3 w-full px-1 py-2 text-sm text-[#666] hover:text-[#DC2626] transition-colors">
             <LogOut className="w-4 h-4" />Sign out
           </button>
+          <p className="text-[#333] text-[10px] mt-2 font-mono">v{APP_VERSION}</p>
         </div>
       </aside>
 

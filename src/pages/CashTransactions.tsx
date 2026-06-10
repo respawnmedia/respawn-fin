@@ -14,7 +14,7 @@ import {
   getAppSettings, addAuditEntry
 } from '@/lib/storage';
 import { formatCurrency, formatDate, currentMonth } from '@/utils/format';
-import type { CashTransaction, CashType, Vertical } from '@/types';
+import type { CashTransaction, CashType } from '@/types';
 
 const VERTICALS: { value: string; label: string }[] = [
   { value: '', label: 'No vertical' },
@@ -126,7 +126,7 @@ export function CashTransactionsPage() {
       category_id: form.category_id,
       party: form.party.trim(),
       description: form.description.trim(),
-      vertical: (form.vertical as Vertical) || undefined,
+      vertical: form.vertical || undefined,
       tags: form.tags.split(',').map(t => t.trim()).filter(Boolean),
       created_by: 'founder',
     };

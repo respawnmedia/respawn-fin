@@ -40,9 +40,11 @@ export interface BankTransaction {
   balance: number;
   ref_no?: string;
   category_id: string;
-  vertical?: Vertical;
+  vertical?: string;
   tags: string[];
   notes?: string;
+  reason?: string;
+  client_id?: string;
   confidence_score?: number;
   linked_invoice_id?: string;
 }
@@ -59,9 +61,11 @@ export interface CashTransaction {
   category_id: string;
   party: string;
   description: string;
-  vertical?: Vertical;
+  reason?: string;
+  vertical?: string;
   tags: string[];
   receipt_url?: string;
+  client_id?: string;
   created_by: string;
 }
 
@@ -84,6 +88,7 @@ export interface Category {
   name: string;
   type: CategoryType;
   is_custom: boolean;
+  description?: string;
 }
 
 export interface NarrationCategoryMap {
@@ -93,9 +98,16 @@ export interface NarrationCategoryMap {
   confidence: number;
 }
 
+// ─── Verticals (custom) ────────────────────────────────────────────────────────
+
+export interface ClientVertical {
+  id: string;       // slug e.g. 'restaurants'
+  label: string;    // display e.g. 'Restaurants'
+  is_custom: boolean;
+}
+
 // ─── Clients & Invoices ───────────────────────────────────────────────────────
 
-export type Vertical = 'restaurants' | 'menswear' | 'weddings' | 'other';
 export type BillingCycle = 'monthly' | 'quarterly' | 'one-off';
 export type PaymentMethod = 'UPI' | 'Bank Transfer' | 'Cash' | 'Cheque';
 export type ClientStatus = 'active' | 'inactive' | 'paused';
@@ -103,7 +115,7 @@ export type ClientStatus = 'active' | 'inactive' | 'paused';
 export interface Client {
   id: string;
   name: string;
-  vertical: Vertical;
+  vertical: string;           // vertical id
   retainer_amount: number;
   billing_cycle: BillingCycle;
   payment_method: PaymentMethod;
@@ -111,6 +123,35 @@ export interface Client {
   contact: string;
   start_date: string;
   status: ClientStatus;
+  // Fixed cost line items as a template for each month
+  fixed_cost_items: ClientCostItem[];
+}
+
+export interface ClientCostItem {
+  id: string;
+  label: string;           // "Shoot", "Editor Fee", "Content Manager"
+  estimated_amount: number;
+  category_id: string;
+  is_variable: boolean;    // true = amount can differ month to month
+}
+
+// Monthly actual cost sheet per client
+export interface ClientMonthlyCost {
+  id: string;
+  client_id: string;
+  month: string;           // YYYY-MM
+  line_items: ClientMonthlyCostLine[];
+  total_cost: number;
+  notes?: string;
+}
+
+export interface ClientMonthlyCostLine {
+  id: string;
+  label: string;
+  planned_amount: number;
+  actual_amount: number;
+  category_id: string;
+  transaction_ids: string[];  // linked bank/cash txn ids
 }
 
 export type InvoiceStatus = 'Draft' | 'Sent' | 'Paid' | 'Partially Paid' | 'Overdue';
@@ -129,6 +170,64 @@ export interface Invoice {
   notes?: string;
 }
 
+// ─── Team & Vendors ───────────────────────────────────────────────────────────
+
+export type TeamMemberType = 'employee' | 'freelancer' | 'vendor';
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  type: TeamMemberType;
+  role: string;
+  monthly_cost: number;     // salary or avg monthly spend
+  client_allocations: TeamClientAllocation[];  // how cost splits across clients
+  skills: string[];
+  contact?: string;
+  active: boolean;
+  joined_date: string;
+  notes?: string;
+}
+
+export interface TeamClientAllocation {
+  client_id: string;
+  percentage: number;   // 0-100, must sum to ≤100 (rest = overhead)
+}
+
+// ─── Invoice Settings ─────────────────────────────────────────────────────────
+
+export interface InvoiceSettings {
+  company_name: string;
+  address: string;
+  city: string;
+  state: string;
+  pincode: string;
+  gstin: string;
+  pan: string;
+  phone: string;
+  email: string;
+  bank_name: string;
+  account_no: string;
+  ifsc: string;
+  account_holder: string;
+  logo_base64?: string;
+  footer_note?: string;
+  payment_terms?: string;
+}
+
+// ─── Expense Attributions (smart linking) ─────────────────────────────────────
+
+export interface ExpenseAttribution {
+  id: string;
+  transaction_id: string;
+  transaction_type: 'bank' | 'cash';
+  client_id: string;
+  month: string;
+  amount: number;
+  label: string;
+  confirmed: boolean;
+  created_at: string;
+}
+
 // ─── Tax ──────────────────────────────────────────────────────────────────────
 
 export type BusinessStructure = 'sole_proprietorship' | 'partnership' | 'llp' | 'pvt_ltd';
@@ -138,14 +237,14 @@ export interface TaxSettings {
   business_structure: BusinessStructure;
   gstin: string;
   pan: string;
-  fy_start: string; // 'April'
-  gst_rate: number; // 18
+  fy_start: string;
+  gst_rate: number;
   state: string;
 }
 
 export interface TaxSummaryMonthly {
   id: string;
-  month: string; // YYYY-MM
+  month: string;
   gst_out: number;
   gst_in: number;
   gst_net: number;
@@ -177,8 +276,10 @@ export interface GuruMessage {
 export interface AppSettings {
   cash_opening_balance: number;
   cash_holder: string;
+  cash_holder_custom?: string;
   quick_entries: QuickEntry[];
   tax_settings?: TaxSettings;
+  founder_salaries?: FounderSalary[];
 }
 
 export interface QuickEntry {
@@ -188,4 +289,10 @@ export interface QuickEntry {
   amount: number;
   category_id: string;
   description: string;
+}
+
+export interface FounderSalary {
+  name: string;
+  monthly_amount: number;
+  active: boolean;
 }

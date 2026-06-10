@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { ToastProvider } from '@/components/ui/ToastProvider';
 import { Layout } from '@/components/layout/Layout';
@@ -14,6 +14,7 @@ import { TaxAuditPage } from '@/pages/TaxAudit';
 import { FinanceGuruPage } from '@/pages/FinanceGuru';
 import { SettingsPage } from '@/pages/Settings';
 import { seedDefaultData } from '@/lib/seed';
+import { pullFromSupabase } from '@/lib/storage';
 
 function AppRoutes() {
   const { isAuthenticated } = useAuth();
@@ -37,7 +38,39 @@ function AppRoutes() {
 }
 
 export default function App() {
-  useEffect(() => { seedDefaultData(); }, []);
+  const [syncing, setSyncing] = useState(true);
+
+  useEffect(() => {
+    // First: pull all data from Supabase into localStorage (if env vars set)
+    pullFromSupabase()
+      .then(() => {
+        // Then seed any defaults that are missing
+        seedDefaultData();
+        setSyncing(false);
+      })
+      .catch(() => {
+        seedDefaultData();
+        setSyncing(false);
+      });
+
+    // Refresh every 30 seconds to catch changes from other devices
+    const interval = setInterval(() => {
+      pullFromSupabase().catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (syncing) {
+    return (
+      <div className="min-h-screen bg-[#070707] flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-[#16C4BA] border-t-transparent mx-auto animate-spin mb-3" />
+          <p className="text-xs text-[#666] uppercase tracking-widest">Syncing</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <BrowserRouter>
       <AuthProvider>

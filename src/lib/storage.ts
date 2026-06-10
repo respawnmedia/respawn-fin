@@ -1,8 +1,18 @@
 /**
- * Respawn Finance — Storage Abstraction Layer v2
- * All localStorage access flows through here. Swap to Supabase by rewriting this file only.
+ * Respawn Finance — Storage Layer (Supabase implementation)
+ *
+ * To use this:
+ * 1. npm install @supabase/supabase-js
+ * 2. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY env vars
+ * 3. Copy this file to src/lib/storage.ts
+ *
+ * NOTE: This is async. The localStorage version was sync. You'll need to
+ * update the components that call these functions to use `await` and
+ * `useEffect` for data loading. We can do that in a follow-up step OR
+ * wrap each function with a sync cache layer (recommended for minimal changes).
  */
 
+import { createClient } from '@supabase/supabase-js';
 import type {
   AuditLog, BankStatement, BankTransaction, CashTransaction, CashBalanceLog,
   Category, NarrationCategoryMap, ClientVertical, Client, ClientMonthlyCost,
@@ -10,273 +20,341 @@ import type {
   AppSettings, TeamMember, InvoiceSettings, ExpenseAttribution,
 } from '@/types';
 
-const KEYS = {
-  AUDIT_LOG: 'rf:audit_log',
-  BANK_STATEMENTS: 'rf:bank_statements',
-  BANK_TRANSACTIONS: 'rf:bank_transactions',
-  CASH_TRANSACTIONS: 'rf:cash_transactions',
-  CASH_BALANCE_LOG: 'rf:cash_balance_log',
-  CATEGORIES: 'rf:categories',
-  NARRATION_MAP: 'rf:narration_map',
-  VERTICALS: 'rf:verticals',
-  CLIENTS: 'rf:clients',
-  CLIENT_MONTHLY_COSTS: 'rf:client_monthly_costs',
-  INVOICES: 'rf:invoices',
-  INVOICE_SETTINGS: 'rf:invoice_settings',
-  TAX_SETTINGS: 'rf:tax_settings',
-  TAX_SUMMARIES: 'rf:tax_summaries',
-  GURU_CONVERSATIONS: 'rf:guru_conversations',
-  GURU_MESSAGES: 'rf:guru_messages',
-  APP_SETTINGS: 'rf:app_settings',
-  TEAM_MEMBERS: 'rf:team_members',
-  EXPENSE_ATTRIBUTIONS: 'rf:expense_attributions',
-} as const;
+const url = import.meta.env.VITE_SUPABASE_URL;
+const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-function read<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch { return fallback; }
-}
-function write<T>(key: string, value: T): void {
-  localStorage.setItem(key, JSON.stringify(value));
+if (!url || !key) {
+  console.warn('Supabase credentials not set. App will not function correctly.');
 }
 
-// ─── Audit ────────────────────────────────────────────────────────────────────
-export function getAuditLog(): AuditLog[] { return read<AuditLog[]>(KEYS.AUDIT_LOG, []); }
-export function addAuditEntry(entry: Omit<AuditLog, 'id' | 'timestamp'>): void {
-  const log = getAuditLog();
-  log.unshift({ ...entry, id: crypto.randomUUID(), timestamp: new Date().toISOString() });
-  write(KEYS.AUDIT_LOG, log.slice(0, 1000));
+export const supabase = createClient(url || '', key || '');
+
+// ─── Audit Log ──────────────────────────────────────────────────────────────
+export async function getAuditLog(): Promise<AuditLog[]> {
+  const { data } = await supabase.from('audit_log').select('*').order('timestamp', { ascending: false }).limit(1000);
+  return data || [];
+}
+export async function addAuditEntry(entry: Omit<AuditLog, 'id' | 'timestamp'>): Promise<void> {
+  await supabase.from('audit_log').insert(entry);
 }
 
-// ─── Bank Statements ──────────────────────────────────────────────────────────
-export function getBankStatements(): BankStatement[] { return read<BankStatement[]>(KEYS.BANK_STATEMENTS, []); }
-export function addBankStatement(s: Omit<BankStatement, 'id' | 'uploaded_at'>): BankStatement {
-  const stmts = getBankStatements();
-  const n: BankStatement = { ...s, id: crypto.randomUUID(), uploaded_at: new Date().toISOString() };
-  write(KEYS.BANK_STATEMENTS, [n, ...stmts]); return n;
+// ─── Bank Statements ────────────────────────────────────────────────────────
+export async function getBankStatements(): Promise<BankStatement[]> {
+  const { data } = await supabase.from('bank_statements').select('*').order('uploaded_at', { ascending: false });
+  return data || [];
 }
-export function updateBankStatement(id: string, u: Partial<BankStatement>): void {
-  write(KEYS.BANK_STATEMENTS, getBankStatements().map(s => s.id === id ? { ...s, ...u } : s));
+export async function addBankStatement(s: Omit<BankStatement, 'id' | 'uploaded_at'>): Promise<BankStatement> {
+  const { data, error } = await supabase.from('bank_statements').insert(s).select().single();
+  if (error) throw error;
+  return data;
 }
-
-// ─── Bank Transactions ────────────────────────────────────────────────────────
-export function getBankTransactions(): BankTransaction[] { return read<BankTransaction[]>(KEYS.BANK_TRANSACTIONS, []); }
-export function getBankTransactionsByStatement(sid: string): BankTransaction[] { return getBankTransactions().filter(t => t.statement_id === sid); }
-export function addBankTransactions(txns: Omit<BankTransaction, 'id'>[]): BankTransaction[] {
-  const existing = getBankTransactions();
-  const newTxns: BankTransaction[] = txns.map(t => ({ ...t, id: crypto.randomUUID() }));
-  write(KEYS.BANK_TRANSACTIONS, [...newTxns, ...existing]); return newTxns;
-}
-export function updateBankTransaction(id: string, u: Partial<BankTransaction>): void {
-  write(KEYS.BANK_TRANSACTIONS, getBankTransactions().map(t => t.id === id ? { ...t, ...u } : t));
-}
-export function deleteBankTransaction(id: string): void {
-  write(KEYS.BANK_TRANSACTIONS, getBankTransactions().filter(t => t.id !== id));
+export async function updateBankStatement(id: string, u: Partial<BankStatement>): Promise<void> {
+  await supabase.from('bank_statements').update(u).eq('id', id);
 }
 
-// ─── Cash Transactions ────────────────────────────────────────────────────────
-export function getCashTransactions(): CashTransaction[] { return read<CashTransaction[]>(KEYS.CASH_TRANSACTIONS, []); }
-export function addCashTransaction(t: Omit<CashTransaction, 'id'>): CashTransaction {
-  const n: CashTransaction = { ...t, id: crypto.randomUUID() };
-  write(KEYS.CASH_TRANSACTIONS, [n, ...getCashTransactions()]); return n;
+// ─── Bank Transactions ──────────────────────────────────────────────────────
+export async function getBankTransactions(): Promise<BankTransaction[]> {
+  const { data } = await supabase.from('bank_transactions').select('*').order('date', { ascending: false });
+  return data || [];
 }
-export function updateCashTransaction(id: string, u: Partial<CashTransaction>): void {
-  write(KEYS.CASH_TRANSACTIONS, getCashTransactions().map(t => t.id === id ? { ...t, ...u } : t));
+export async function getBankTransactionsByStatement(sid: string): Promise<BankTransaction[]> {
+  const { data } = await supabase.from('bank_transactions').select('*').eq('statement_id', sid);
+  return data || [];
 }
-export function deleteCashTransaction(id: string): void {
-  write(KEYS.CASH_TRANSACTIONS, getCashTransactions().filter(t => t.id !== id));
+export async function addBankTransactions(txns: Omit<BankTransaction, 'id'>[]): Promise<BankTransaction[]> {
+  const { data, error } = await supabase.from('bank_transactions').insert(txns).select();
+  if (error) throw error;
+  return data || [];
 }
-
-// ─── Cash Balance Log ─────────────────────────────────────────────────────────
-export function getCashBalanceLog(): CashBalanceLog[] { return read<CashBalanceLog[]>(KEYS.CASH_BALANCE_LOG, []); }
-export function addCashBalanceLog(e: Omit<CashBalanceLog, 'id'>): CashBalanceLog {
-  const n: CashBalanceLog = { ...e, id: crypto.randomUUID() };
-  write(KEYS.CASH_BALANCE_LOG, [n, ...getCashBalanceLog()]); return n;
+export async function updateBankTransaction(id: string, u: Partial<BankTransaction>): Promise<void> {
+  await supabase.from('bank_transactions').update(u).eq('id', id);
 }
-
-// ─── Categories ───────────────────────────────────────────────────────────────
-export function getCategories(): Category[] { return read<Category[]>(KEYS.CATEGORIES, []); }
-export function addCategory(c: Omit<Category, 'id'>): Category {
-  const n: Category = { ...c, id: crypto.randomUUID() };
-  write(KEYS.CATEGORIES, [...getCategories(), n]); return n;
-}
-export function updateCategory(id: string, u: Partial<Category>): void {
-  write(KEYS.CATEGORIES, getCategories().map(c => c.id === id ? { ...c, ...u } : c));
-}
-export function deleteCategory(id: string): void {
-  write(KEYS.CATEGORIES, getCategories().filter(c => c.id !== id));
+export async function deleteBankTransaction(id: string): Promise<void> {
+  await supabase.from('bank_transactions').delete().eq('id', id);
 }
 
-// ─── Narration Map ────────────────────────────────────────────────────────────
-export function getNarrationMap(): NarrationCategoryMap[] { return read<NarrationCategoryMap[]>(KEYS.NARRATION_MAP, []); }
-export function upsertNarrationMap(pattern: string, category_id: string): void {
-  const map = getNarrationMap();
-  const existing = map.find(m => m.narration_pattern === pattern);
-  if (existing) {
-    write(KEYS.NARRATION_MAP, map.map(m => m.narration_pattern === pattern ? { ...m, category_id, confidence: 1 } : m));
-  } else {
-    write(KEYS.NARRATION_MAP, [...map, { id: crypto.randomUUID(), narration_pattern: pattern, category_id, confidence: 1 }]);
-  }
+// ─── Cash Transactions ──────────────────────────────────────────────────────
+export async function getCashTransactions(): Promise<CashTransaction[]> {
+  const { data } = await supabase.from('cash_transactions').select('*').order('date', { ascending: false });
+  return data || [];
+}
+export async function addCashTransaction(t: Omit<CashTransaction, 'id'>): Promise<CashTransaction> {
+  const { data, error } = await supabase.from('cash_transactions').insert(t).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function updateCashTransaction(id: string, u: Partial<CashTransaction>): Promise<void> {
+  await supabase.from('cash_transactions').update(u).eq('id', id);
+}
+export async function deleteCashTransaction(id: string): Promise<void> {
+  await supabase.from('cash_transactions').delete().eq('id', id);
 }
 
-// ─── Verticals ────────────────────────────────────────────────────────────────
-export function getVerticals(): ClientVertical[] { return read<ClientVertical[]>(KEYS.VERTICALS, []); }
-export function addVertical(v: Omit<ClientVertical, 'is_custom'>): ClientVertical {
-  const n: ClientVertical = { ...v, is_custom: true };
-  write(KEYS.VERTICALS, [...getVerticals(), n]); return n;
+// ─── Cash Balance Log ───────────────────────────────────────────────────────
+export async function getCashBalanceLog(): Promise<CashBalanceLog[]> {
+  const { data } = await supabase.from('cash_balance_log').select('*').order('date', { ascending: false });
+  return data || [];
 }
-export function deleteVertical(id: string): void {
-  write(KEYS.VERTICALS, getVerticals().filter(v => v.id !== id));
-}
-
-// ─── Clients ──────────────────────────────────────────────────────────────────
-export function getClients(): Client[] { return read<Client[]>(KEYS.CLIENTS, []); }
-export function addClient(c: Omit<Client, 'id'>): Client {
-  const n: Client = { ...c, id: crypto.randomUUID() };
-  write(KEYS.CLIENTS, [...getClients(), n]); return n;
-}
-export function updateClient(id: string, u: Partial<Client>): void {
-  write(KEYS.CLIENTS, getClients().map(c => c.id === id ? { ...c, ...u } : c));
-}
-export function deleteClient(id: string): void {
-  write(KEYS.CLIENTS, getClients().filter(c => c.id !== id));
+export async function addCashBalanceLog(e: Omit<CashBalanceLog, 'id'>): Promise<CashBalanceLog> {
+  const { data, error } = await supabase.from('cash_balance_log').insert(e).select().single();
+  if (error) throw error;
+  return data;
 }
 
-// ─── Client Monthly Costs ─────────────────────────────────────────────────────
-export function getClientMonthlyCosts(): ClientMonthlyCost[] { return read<ClientMonthlyCost[]>(KEYS.CLIENT_MONTHLY_COSTS, []); }
-export function getClientMonthlyCost(clientId: string, month: string): ClientMonthlyCost | null {
-  return getClientMonthlyCosts().find(c => c.client_id === clientId && c.month === month) || null;
+// ─── Categories ─────────────────────────────────────────────────────────────
+export async function getCategories(): Promise<Category[]> {
+  const { data } = await supabase.from('categories').select('*');
+  return data || [];
 }
-export function upsertClientMonthlyCost(cost: Omit<ClientMonthlyCost, 'id'> & { id?: string }): ClientMonthlyCost {
-  const all = getClientMonthlyCosts();
-  const existing = all.find(c => c.client_id === cost.client_id && c.month === cost.month);
-  if (existing) {
-    const updated = { ...existing, ...cost, id: existing.id };
-    write(KEYS.CLIENT_MONTHLY_COSTS, all.map(c => c.id === existing.id ? updated : c));
-    return updated;
-  }
-  const n: ClientMonthlyCost = { ...cost, id: crypto.randomUUID() };
-  write(KEYS.CLIENT_MONTHLY_COSTS, [...all, n]); return n;
+export async function addCategory(c: Omit<Category, 'id'>): Promise<Category> {
+  const { data, error } = await supabase.from('categories').insert(c).select().single();
+  if (error) throw error;
+  return data;
 }
-
-// ─── Invoices ─────────────────────────────────────────────────────────────────
-export function getInvoices(): Invoice[] { return read<Invoice[]>(KEYS.INVOICES, []); }
-export function getInvoicesByClient(clientId: string): Invoice[] { return getInvoices().filter(i => i.client_id === clientId); }
-export function addInvoice(i: Omit<Invoice, 'id'>): Invoice {
-  const n: Invoice = { ...i, id: crypto.randomUUID() };
-  write(KEYS.INVOICES, [n, ...getInvoices()]); return n;
+export async function updateCategory(id: string, u: Partial<Category>): Promise<void> {
+  await supabase.from('categories').update(u).eq('id', id);
 }
-export function updateInvoice(id: string, u: Partial<Invoice>): void {
-  write(KEYS.INVOICES, getInvoices().map(i => i.id === id ? { ...i, ...u } : i));
-}
-export function deleteInvoice(id: string): void {
-  write(KEYS.INVOICES, getInvoices().filter(i => i.id !== id));
+export async function deleteCategory(id: string): Promise<void> {
+  await supabase.from('categories').delete().eq('id', id);
 }
 
-// ─── Invoice Settings ─────────────────────────────────────────────────────────
-export function getInvoiceSettings(): InvoiceSettings | null { return read<InvoiceSettings | null>(KEYS.INVOICE_SETTINGS, null); }
-export function setInvoiceSettings(s: InvoiceSettings): void { write(KEYS.INVOICE_SETTINGS, s); }
-
-// ─── Team Members ─────────────────────────────────────────────────────────────
-export function getTeamMembers(): TeamMember[] { return read<TeamMember[]>(KEYS.TEAM_MEMBERS, []); }
-export function addTeamMember(m: Omit<TeamMember, 'id'>): TeamMember {
-  const n: TeamMember = { ...m, id: crypto.randomUUID() };
-  write(KEYS.TEAM_MEMBERS, [...getTeamMembers(), n]); return n;
+// ─── Narration Map ──────────────────────────────────────────────────────────
+export async function getNarrationMap(): Promise<NarrationCategoryMap[]> {
+  const { data } = await supabase.from('narration_map').select('*');
+  return data || [];
 }
-export function updateTeamMember(id: string, u: Partial<TeamMember>): void {
-  write(KEYS.TEAM_MEMBERS, getTeamMembers().map(m => m.id === id ? { ...m, ...u } : m));
-}
-export function deleteTeamMember(id: string): void {
-  write(KEYS.TEAM_MEMBERS, getTeamMembers().filter(m => m.id !== id));
+export async function upsertNarrationMap(narration_pattern: string, category_id: string): Promise<void> {
+  await supabase.from('narration_map').upsert({ narration_pattern, category_id, confidence: 1 }, { onConflict: 'narration_pattern' });
 }
 
-// ─── Expense Attributions ─────────────────────────────────────────────────────
-export function getExpenseAttributions(): ExpenseAttribution[] { return read<ExpenseAttribution[]>(KEYS.EXPENSE_ATTRIBUTIONS, []); }
-export function addExpenseAttribution(a: Omit<ExpenseAttribution, 'id' | 'created_at'>): ExpenseAttribution {
-  const n: ExpenseAttribution = { ...a, id: crypto.randomUUID(), created_at: new Date().toISOString() };
-  write(KEYS.EXPENSE_ATTRIBUTIONS, [...getExpenseAttributions(), n]); return n;
+// ─── Verticals ──────────────────────────────────────────────────────────────
+export async function getVerticals(): Promise<ClientVertical[]> {
+  const { data } = await supabase.from('verticals').select('*');
+  return data || [];
 }
-export function updateExpenseAttribution(id: string, u: Partial<ExpenseAttribution>): void {
-  write(KEYS.EXPENSE_ATTRIBUTIONS, getExpenseAttributions().map(a => a.id === id ? { ...a, ...u } : a));
+export async function addVertical(v: Omit<ClientVertical, 'is_custom'>): Promise<ClientVertical> {
+  const { data, error } = await supabase.from('verticals').insert({ ...v, is_custom: true }).select().single();
+  if (error) throw error;
+  return data;
 }
-export function getAttributionsByClient(clientId: string): ExpenseAttribution[] {
-  return getExpenseAttributions().filter(a => a.client_id === clientId);
-}
-export function getAttributionsByMonth(month: string): ExpenseAttribution[] {
-  return getExpenseAttributions().filter(a => a.month === month);
+export async function deleteVertical(id: string): Promise<void> {
+  await supabase.from('verticals').delete().eq('id', id);
 }
 
-// ─── Tax ──────────────────────────────────────────────────────────────────────
-export function getTaxSettings(): TaxSettings | null { return read<TaxSettings | null>(KEYS.TAX_SETTINGS, null); }
-export function setTaxSettings(s: TaxSettings): void { write(KEYS.TAX_SETTINGS, s); }
-export function getTaxSummaries(): TaxSummaryMonthly[] { return read<TaxSummaryMonthly[]>(KEYS.TAX_SUMMARIES, []); }
-export function upsertTaxSummary(s: Omit<TaxSummaryMonthly, 'id'>): void {
-  const all = getTaxSummaries();
-  const existing = all.find(x => x.month === s.month);
-  if (existing) { write(KEYS.TAX_SUMMARIES, all.map(x => x.month === s.month ? { ...x, ...s } : x)); }
-  else { write(KEYS.TAX_SUMMARIES, [...all, { ...s, id: crypto.randomUUID() }]); }
+// ─── Clients ────────────────────────────────────────────────────────────────
+export async function getClients(): Promise<Client[]> {
+  const { data } = await supabase.from('clients').select('*');
+  return data || [];
+}
+export async function addClient(c: Omit<Client, 'id'>): Promise<Client> {
+  const { data, error } = await supabase.from('clients').insert(c).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function updateClient(id: string, u: Partial<Client>): Promise<void> {
+  await supabase.from('clients').update(u).eq('id', id);
+}
+export async function deleteClient(id: string): Promise<void> {
+  await supabase.from('clients').delete().eq('id', id);
 }
 
-// ─── Finance Guru ─────────────────────────────────────────────────────────────
-export function getGuruConversations(): GuruConversation[] { return read<GuruConversation[]>(KEYS.GURU_CONVERSATIONS, []); }
-export function addGuruConversation(c: Omit<GuruConversation, 'id'>): GuruConversation {
-  const n: GuruConversation = { ...c, id: crypto.randomUUID() };
-  write(KEYS.GURU_CONVERSATIONS, [n, ...getGuruConversations()]); return n;
+// ─── Client Monthly Costs ───────────────────────────────────────────────────
+export async function getClientMonthlyCosts(): Promise<ClientMonthlyCost[]> {
+  const { data } = await supabase.from('client_monthly_costs').select('*');
+  return data || [];
 }
-export function updateGuruConversation(id: string, u: Partial<GuruConversation>): void {
-  write(KEYS.GURU_CONVERSATIONS, getGuruConversations().map(c => c.id === id ? { ...c, ...u } : c));
+export async function getClientMonthlyCost(client_id: string, month: string): Promise<ClientMonthlyCost | null> {
+  const { data } = await supabase.from('client_monthly_costs').select('*').eq('client_id', client_id).eq('month', month).maybeSingle();
+  return data;
 }
-export function getGuruMessages(convId: string): GuruMessage[] {
-  return read<GuruMessage[]>(KEYS.GURU_MESSAGES, []).filter(m => m.conversation_id === convId);
-}
-export function addGuruMessage(m: Omit<GuruMessage, 'id'>): GuruMessage {
-  const n: GuruMessage = { ...m, id: crypto.randomUUID() };
-  const all = read<GuruMessage[]>(KEYS.GURU_MESSAGES, []);
-  write(KEYS.GURU_MESSAGES, [...all, n]); return n;
-}
-export function updateGuruMessage(id: string, u: Partial<GuruMessage>): void {
-  const all = read<GuruMessage[]>(KEYS.GURU_MESSAGES, []);
-  write(KEYS.GURU_MESSAGES, all.map(m => m.id === id ? { ...m, ...u } : m));
+export async function upsertClientMonthlyCost(cost: Omit<ClientMonthlyCost, 'id'>): Promise<ClientMonthlyCost> {
+  const { data, error } = await supabase.from('client_monthly_costs')
+    .upsert(cost, { onConflict: 'client_id,month' })
+    .select().single();
+  if (error) throw error;
+  return data;
 }
 
-// ─── App Settings ─────────────────────────────────────────────────────────────
+// ─── Invoices ───────────────────────────────────────────────────────────────
+export async function getInvoices(): Promise<Invoice[]> {
+  const { data } = await supabase.from('invoices').select('*').order('invoice_date', { ascending: false });
+  return data || [];
+}
+export async function getInvoicesByClient(clientId: string): Promise<Invoice[]> {
+  const { data } = await supabase.from('invoices').select('*').eq('client_id', clientId);
+  return data || [];
+}
+export async function addInvoice(i: Omit<Invoice, 'id'>): Promise<Invoice> {
+  const { data, error } = await supabase.from('invoices').insert(i).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function updateInvoice(id: string, u: Partial<Invoice>): Promise<void> {
+  await supabase.from('invoices').update(u).eq('id', id);
+}
+export async function deleteInvoice(id: string): Promise<void> {
+  await supabase.from('invoices').delete().eq('id', id);
+}
+
+// ─── Invoice Settings ───────────────────────────────────────────────────────
+export async function getInvoiceSettings(): Promise<InvoiceSettings | null> {
+  const { data } = await supabase.from('invoice_settings').select('*').eq('id', 1).maybeSingle();
+  return data;
+}
+export async function setInvoiceSettings(s: InvoiceSettings): Promise<void> {
+  await supabase.from('invoice_settings').upsert({ ...s, id: 1 });
+}
+
+// ─── Team Members ───────────────────────────────────────────────────────────
+export async function getTeamMembers(): Promise<TeamMember[]> {
+  const { data } = await supabase.from('team_members').select('*');
+  return data || [];
+}
+export async function addTeamMember(m: Omit<TeamMember, 'id'>): Promise<TeamMember> {
+  const { data, error } = await supabase.from('team_members').insert(m).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function updateTeamMember(id: string, u: Partial<TeamMember>): Promise<void> {
+  await supabase.from('team_members').update(u).eq('id', id);
+}
+export async function deleteTeamMember(id: string): Promise<void> {
+  await supabase.from('team_members').delete().eq('id', id);
+}
+
+// ─── Expense Attributions ───────────────────────────────────────────────────
+export async function getExpenseAttributions(): Promise<ExpenseAttribution[]> {
+  const { data } = await supabase.from('expense_attributions').select('*');
+  return data || [];
+}
+export async function addExpenseAttribution(a: Omit<ExpenseAttribution, 'id' | 'created_at'>): Promise<ExpenseAttribution> {
+  const { data, error } = await supabase.from('expense_attributions').insert(a).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function updateExpenseAttribution(id: string, u: Partial<ExpenseAttribution>): Promise<void> {
+  await supabase.from('expense_attributions').update(u).eq('id', id);
+}
+export async function getAttributionsByClient(client_id: string): Promise<ExpenseAttribution[]> {
+  const { data } = await supabase.from('expense_attributions').select('*').eq('client_id', client_id);
+  return data || [];
+}
+export async function getAttributionsByMonth(month: string): Promise<ExpenseAttribution[]> {
+  const { data } = await supabase.from('expense_attributions').select('*').eq('month', month);
+  return data || [];
+}
+
+// ─── Tax ────────────────────────────────────────────────────────────────────
+export async function getTaxSettings(): Promise<TaxSettings | null> {
+  const { data } = await supabase.from('tax_settings').select('*').eq('id', 1).maybeSingle();
+  return data;
+}
+export async function setTaxSettings(s: TaxSettings): Promise<void> {
+  await supabase.from('tax_settings').upsert({ ...s, id: 1 });
+}
+export async function getTaxSummaries(): Promise<TaxSummaryMonthly[]> {
+  const { data } = await supabase.from('tax_summaries').select('*');
+  return data || [];
+}
+export async function upsertTaxSummary(s: Omit<TaxSummaryMonthly, 'id'>): Promise<void> {
+  await supabase.from('tax_summaries').upsert(s, { onConflict: 'month' });
+}
+
+// ─── Finance Guru ───────────────────────────────────────────────────────────
+export async function getGuruConversations(): Promise<GuruConversation[]> {
+  const { data } = await supabase.from('guru_conversations').select('*').order('started_at', { ascending: false });
+  return data || [];
+}
+export async function addGuruConversation(c: Omit<GuruConversation, 'id'>): Promise<GuruConversation> {
+  const { data, error } = await supabase.from('guru_conversations').insert(c).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function updateGuruConversation(id: string, u: Partial<GuruConversation>): Promise<void> {
+  await supabase.from('guru_conversations').update(u).eq('id', id);
+}
+export async function getGuruMessages(conversation_id: string): Promise<GuruMessage[]> {
+  const { data } = await supabase.from('guru_messages').select('*').eq('conversation_id', conversation_id).order('timestamp');
+  return data || [];
+}
+export async function addGuruMessage(m: Omit<GuruMessage, 'id'>): Promise<GuruMessage> {
+  const { data, error } = await supabase.from('guru_messages').insert(m).select().single();
+  if (error) throw error;
+  return data;
+}
+export async function updateGuruMessage(id: string, u: Partial<GuruMessage>): Promise<void> {
+  await supabase.from('guru_messages').update(u).eq('id', id);
+}
+
+// ─── App Settings ───────────────────────────────────────────────────────────
 const DEFAULT_SETTINGS: AppSettings = {
   cash_opening_balance: 0,
   cash_holder: 'Shlok',
-  quick_entries: [
-    { id: '1', label: 'Office Cafe', type: 'Cash Out', amount: 500, category_id: '', description: 'Office cafe' },
-    { id: '2', label: 'Auto Fare', type: 'Cash Out', amount: 100, category_id: '', description: 'Auto fare' },
-  ],
-  founder_salaries: [
-    { name: 'Shlok', monthly_amount: 0, active: true },
-    { name: 'Tanay', monthly_amount: 0, active: true },
-    { name: 'Arihant', monthly_amount: 0, active: true },
-  ],
+  quick_entries: [],
+  founder_salaries: [{ name: 'Shlok', monthly_amount: 0, active: true }, { name: 'Tanay', monthly_amount: 0, active: true }, { name: 'Arihant', monthly_amount: 0, active: true }],
 };
-export function getAppSettings(): AppSettings { return read<AppSettings>(KEYS.APP_SETTINGS, DEFAULT_SETTINGS); }
-export function updateAppSettings(u: Partial<AppSettings>): void {
-  write(KEYS.APP_SETTINGS, { ...getAppSettings(), ...u });
+
+export async function getAppSettings(): Promise<AppSettings> {
+  const { data } = await supabase.from('app_settings').select('*').eq('id', 1).maybeSingle();
+  return data || DEFAULT_SETTINGS;
+}
+export async function updateAppSettings(u: Partial<AppSettings>): Promise<void> {
+  const current = await getAppSettings();
+  await supabase.from('app_settings').upsert({ ...current, ...u, id: 1 });
 }
 
-// ─── Computed ─────────────────────────────────────────────────────────────────
-export function computeCashBalance(): number {
-  const settings = getAppSettings();
-  const txns = getCashTransactions();
+// ─── Computed ───────────────────────────────────────────────────────────────
+export async function computeCashBalance(): Promise<number> {
+  const settings = await getAppSettings();
+  const txns = await getCashTransactions();
   return txns.reduce((bal, t) => t.type === 'Cash In' ? bal + t.amount : bal - t.amount, settings.cash_opening_balance);
 }
 
-// ─── Backup & Restore ─────────────────────────────────────────────────────────
-export function exportAllData(): Record<string, unknown> {
-  const data: Record<string, unknown> = {};
-  Object.entries(KEYS).forEach(([name, key]) => { data[name] = read(key, null); });
-  return data;
+// ─── Backup & Restore (still localStorage-style export for manual backup) ──
+export async function exportAllData(): Promise<Record<string, unknown>> {
+  const [
+    audit_log, bank_statements, bank_transactions, cash_transactions, cash_balance_log,
+    categories, narration_map, verticals, clients, client_monthly_costs, invoices,
+    invoice_settings, team_members, expense_attributions, tax_settings, tax_summaries,
+    guru_conversations, guru_messages, app_settings,
+  ] = await Promise.all([
+    supabase.from('audit_log').select('*'),
+    supabase.from('bank_statements').select('*'),
+    supabase.from('bank_transactions').select('*'),
+    supabase.from('cash_transactions').select('*'),
+    supabase.from('cash_balance_log').select('*'),
+    supabase.from('categories').select('*'),
+    supabase.from('narration_map').select('*'),
+    supabase.from('verticals').select('*'),
+    supabase.from('clients').select('*'),
+    supabase.from('client_monthly_costs').select('*'),
+    supabase.from('invoices').select('*'),
+    supabase.from('invoice_settings').select('*'),
+    supabase.from('team_members').select('*'),
+    supabase.from('expense_attributions').select('*'),
+    supabase.from('tax_settings').select('*'),
+    supabase.from('tax_summaries').select('*'),
+    supabase.from('guru_conversations').select('*'),
+    supabase.from('guru_messages').select('*'),
+    supabase.from('app_settings').select('*'),
+  ]);
+  return {
+    audit_log: audit_log.data, bank_statements: bank_statements.data,
+    bank_transactions: bank_transactions.data, cash_transactions: cash_transactions.data,
+    cash_balance_log: cash_balance_log.data, categories: categories.data,
+    narration_map: narration_map.data, verticals: verticals.data, clients: clients.data,
+    client_monthly_costs: client_monthly_costs.data, invoices: invoices.data,
+    invoice_settings: invoice_settings.data, team_members: team_members.data,
+    expense_attributions: expense_attributions.data, tax_settings: tax_settings.data,
+    tax_summaries: tax_summaries.data, guru_conversations: guru_conversations.data,
+    guru_messages: guru_messages.data, app_settings: app_settings.data,
+  };
 }
-export function importAllData(data: Record<string, unknown>): void {
-  const keyMap = Object.entries(KEYS).reduce((acc, [name, key]) => ({ ...acc, [name]: key }), {} as Record<string, string>);
-  Object.entries(data).forEach(([name, value]) => { if (keyMap[name] && value !== null) write(keyMap[name], value); });
+
+export async function importAllData(_data: Record<string, unknown>): Promise<void> {
+  throw new Error('Use the migration script in supabase/migrate.js to import localStorage data.');
 }
-export function clearAllData(): void {
-  Object.values(KEYS).forEach(key => localStorage.removeItem(key));
+
+export async function clearAllData(): Promise<void> {
+  throw new Error('Clearing data in Supabase must be done via SQL Editor or Table Editor. This is a safety guardrail.');
 }

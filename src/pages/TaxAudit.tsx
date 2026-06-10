@@ -108,7 +108,7 @@ export function TaxAuditPage() {
   });
 
   return (
-    <div className="p-6 max-w-[1100px]">
+    <div className="p-4 lg:p-6 max-w-[1100px]">
       <PageHeader
         title="Tax Audit"
         subtitle="Monthly tax estimates for Respawn Media. Always verify with your CA."

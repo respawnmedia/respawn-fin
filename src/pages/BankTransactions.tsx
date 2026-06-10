@@ -290,7 +290,7 @@ export function BankTransactionsPage() {
     const totalDebit = reviewData.reduce((s, t) => s + t.debit, 0);
 
     return (
-      <div className="p-6 max-w-[1200px]">
+      <div className="p-4 lg:p-6 max-w-[1200px]">
         <PageHeader
           title="Review Extracted Transactions"
           subtitle="Verify categories and remove any incorrect rows before committing"
@@ -333,7 +333,7 @@ export function BankTransactionsPage() {
   }
 
   return (
-    <div className="p-6 max-w-[1200px]">
+    <div className="p-4 lg:p-6 max-w-[1200px]">
       <PageHeader
         title="Bank Transactions"
         subtitle="Upload monthly bank statements for AI-powered extraction"

@@ -103,7 +103,7 @@ export function Dashboard() {
   }, [invoices, clients]);
 
   return (
-    <div className="p-6 max-w-[1400px]">
+    <div className="p-4 lg:p-6 max-w-[1400px]">
       <PageHeader
         title="Dashboard"
         subtitle={`Financial overview · ${new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}`}

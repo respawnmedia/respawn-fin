@@ -216,7 +216,7 @@ export function CashTransactionsPage() {
   ];
 
   return (
-    <div className="p-6 max-w-[1200px]">
+    <div className="p-4 lg:p-6 max-w-[1200px]">
       <PageHeader
         title="Cash Transactions"
         subtitle={`Cash holder: ${settings.cash_holder}`}

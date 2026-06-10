@@ -250,7 +250,7 @@ export function ClientPaymentsPage() {
   const today = new Date().toISOString().split('T')[0];
 
   return (
-    <div className="p-6 max-w-[1100px]">
+    <div className="p-4 lg:p-6 max-w-[1100px]">
       <PageHeader
         title="Client Payments"
         subtitle="Revenue, invoicing, cost tracking per client"

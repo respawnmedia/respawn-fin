@@ -1,25 +1,31 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Star, Plus, MessageSquare, Loader2 } from 'lucide-react';
-import { PageHeader } from '@/components/layout/Layout';
+import { Send, Star, Plus, MessageSquare, Loader2, Check, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
+import { useToast } from '@/components/ui/ToastProvider';
 import {
   getGuruConversations, addGuruConversation, updateGuruConversation,
   getGuruMessages, addGuruMessage, updateGuruMessage,
   getBankTransactions, getCashTransactions, getInvoices,
-  getClients, getCategories, addAuditEntry
+  getClients, getCategories, addAuditEntry,
+  addCashTransaction, addBankTransactions, getBankStatements, addBankStatement,
 } from '@/lib/storage';
 import { formatCurrency, currentMonth, monthsAgo } from '@/utils/format';
 import type { GuruConversation, GuruMessage } from '@/types';
 
 const SUGGESTED_PROMPTS = [
+  "I paid ₹5,000 cash for a Tissera shoot today",
+  "Add a ₹35,000 bank transfer from Mantras Pure Veg",
   "Where can we cut costs without hurting operations?",
   "Which vertical has the best margins?",
-  "Are any expenses growing faster than revenue?",
-  "Which clients are most profitable?",
   "How much runway do we have if revenue stops today?",
   "What should I set aside this month for taxes?",
 ];
+
+interface PendingAction {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
 
 function buildFinancialContext(): string {
   const bankTxns = getBankTransactions();
@@ -27,63 +33,63 @@ function buildFinancialContext(): string {
   const invoices = getInvoices();
   const clients = getClients();
   const categories = getCategories();
-
-  // Last 3 months data
   const months = [0, 1, 2].map(i => monthsAgo(i));
 
   const monthlyData = months.map(month => {
     const bank = bankTxns.filter(t => t.date.startsWith(month));
     const cash = cashTxns.filter(t => t.date.startsWith(month));
     const monthInvoices = invoices.filter(i => i.invoice_date.startsWith(month));
-
     const inflow = bank.reduce((s, t) => s + t.credit, 0) + cash.filter(t => t.type === 'Cash In').reduce((s, t) => s + t.amount, 0);
     const outflow = bank.reduce((s, t) => s + t.debit, 0) + cash.filter(t => t.type === 'Cash Out').reduce((s, t) => s + t.amount, 0);
-
-    // Category breakdown
     const catBreakdown: Record<string, number> = {};
     bank.filter(t => t.debit > 0).forEach(t => {
       const cat = categories.find(c => c.id === t.category_id)?.name || t.category_id;
       catBreakdown[cat] = (catBreakdown[cat] || 0) + t.debit;
     });
-
     return { month, inflow, outflow, net: inflow - outflow, invoicedRevenue: monthInvoices.reduce((s, i) => s + i.amount, 0), catBreakdown };
   });
 
-  // Client payment health
   const clientHealth = clients.map(c => {
-    const clientInvoices = invoices.filter(i => i.client_id === c.id);
-    const paid = clientInvoices.filter(i => i.status === 'Paid').reduce((s, i) => s + i.total, 0);
-    const pending = clientInvoices.filter(i => i.status !== 'Paid').reduce((s, i) => s + i.total, 0);
-    return { name: c.name, vertical: c.vertical, retainer: c.retainer_amount, paid, pending, status: c.status };
+    const cInv = invoices.filter(i => i.client_id === c.id);
+    return { name: c.name, vertical: c.vertical, retainer: c.retainer_amount,
+      paid: cInv.filter(i => i.status === 'Paid').reduce((s, i) => s + i.total, 0),
+      pending: cInv.filter(i => i.status !== 'Paid').reduce((s, i) => s + i.total, 0),
+      status: c.status };
   });
 
   return JSON.stringify({ monthlyData, clientHealth, totalClients: clients.length, currentMonth: currentMonth() }, null, 2);
 }
 
 export function FinanceGuruPage() {
+  const toast = useToast();
   const [conversations, setConversations] = useState<GuruConversation[]>(getGuruConversations());
   const [activeConvId, setActiveConvId] = useState<string | null>(conversations[0]?.id || null);
   const [messages, setMessages] = useState<GuruMessage[]>(activeConvId ? getGuruMessages(activeConvId) : []);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [showSidebar, setShowSidebar] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
-
-  useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom]);
+  useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom, pendingActions]);
 
   function newConversation() {
     const conv = addGuruConversation({ started_at: new Date().toISOString(), title: 'New conversation' });
     setConversations(getGuruConversations());
     setActiveConvId(conv.id);
     setMessages([]);
+    setPendingActions([]);
+    setShowSidebar(false);
   }
 
   function switchConversation(id: string) {
     setActiveConvId(id);
     setMessages(getGuruMessages(id));
+    setPendingActions([]);
+    setShowSidebar(false);
   }
 
   function toggleStar(msg: GuruMessage) {
@@ -91,10 +97,102 @@ export function FinanceGuruPage() {
     setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, starred: !m.starred } : m));
   }
 
+  // Confirm an action: actually create the transaction
+  function confirmAction(action: PendingAction) {
+    if (action.name === 'create_transaction') {
+      const input = action.input as {
+        transaction_type: 'cash' | 'bank';
+        direction: 'in' | 'out';
+        amount: number;
+        date: string;
+        category_id: string;
+        party: string;
+        description: string;
+        reason?: string;
+        client_id?: string;
+      };
+
+      try {
+        if (input.transaction_type === 'cash') {
+          addCashTransaction({
+            date: input.date,
+            type: input.direction === 'in' ? 'Cash In' : 'Cash Out',
+            amount: input.amount,
+            category_id: input.category_id,
+            party: input.party,
+            description: input.description,
+            reason: input.reason,
+            client_id: input.client_id,
+            tags: ['guru-added'],
+            created_by: 'founder',
+          });
+        } else {
+          // For bank, create or find a statement for this month
+          const month = input.date.slice(0, 7);
+          let stmt = getBankStatements().find(s => s.statement_month === month && s.status === 'committed');
+          if (!stmt) {
+            stmt = addBankStatement({
+              bank_name: 'Manual Entry',
+              statement_month: month,
+              status: 'committed',
+            });
+          }
+          addBankTransactions([{
+            statement_id: stmt.id,
+            date: input.date,
+            narration: input.description,
+            debit: input.direction === 'out' ? input.amount : 0,
+            credit: input.direction === 'in' ? input.amount : 0,
+            balance: 0,
+            ref_no: '',
+            category_id: input.category_id,
+            tags: ['guru-added'],
+            reason: input.reason,
+            client_id: input.client_id,
+          }]);
+        }
+
+        addAuditEntry({ user_id: 'founder', action: 'GURU_CREATE_TRANSACTION', entity: input.transaction_type + '_transaction', metadata: input });
+        toast(`${input.transaction_type === 'cash' ? 'Cash' : 'Bank'} transaction created: ${formatCurrency(input.amount)}`, 'success');
+
+        // Remove from pending
+        setPendingActions(prev => prev.filter(a => a.id !== action.id));
+
+        // Add a confirmation message to the conversation
+        if (activeConvId) {
+          const confirmMsg = addGuruMessage({
+            conversation_id: activeConvId,
+            role: 'assistant',
+            content: `✓ Created. Anything else?`,
+            timestamp: new Date().toISOString(),
+            starred: false,
+          });
+          setMessages(prev => [...prev, confirmMsg]);
+        }
+      } catch (err) {
+        toast('Failed to create transaction', 'error');
+        console.error(err);
+      }
+    }
+  }
+
+  function rejectAction(action: PendingAction) {
+    setPendingActions(prev => prev.filter(a => a.id !== action.id));
+    if (activeConvId) {
+      addGuruMessage({
+        conversation_id: activeConvId,
+        role: 'user',
+        content: 'No, please don\'t create that. Let me give you more details.',
+        timestamp: new Date().toISOString(),
+        starred: false,
+      });
+      setMessages(getGuruMessages(activeConvId));
+    }
+  }
+
   async function sendMessage(content: string) {
     if (!content.trim() || loading) return;
 
-    // Ensure conversation exists
     let convId = activeConvId;
     if (!convId) {
       const conv = addGuruConversation({ started_at: new Date().toISOString(), title: content.slice(0, 40) });
@@ -103,13 +201,11 @@ export function FinanceGuruPage() {
       setConversations(getGuruConversations());
     }
 
-    // Add user message
     const userMsg = addGuruMessage({ conversation_id: convId, role: 'user', content, timestamp: new Date().toISOString(), starred: false });
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setLoading(true);
 
-    // Update conversation title if first message
     const convMsgs = getGuruMessages(convId);
     if (convMsgs.length <= 1) {
       updateGuruConversation(convId, { title: content.slice(0, 50) });
@@ -120,34 +216,84 @@ export function FinanceGuruPage() {
 
     try {
       const financialContext = buildFinancialContext();
+      const categories = getCategories();
+      const clients = getClients().filter(c => c.status === 'active');
+
       const response = await fetch('/api/finance-guru', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: [...convMsgs, userMsg].map(m => ({ role: m.role, content: m.content })),
           financialContext,
+          categories: categories.map(c => ({ id: c.id, name: c.name, type: c.type })),
+          clients: clients.map(c => ({ id: c.id, name: c.name, vertical: c.vertical })),
         }),
       });
 
       if (!response.ok) throw new Error('Request failed');
-      const { reply } = await response.json();
+      const { reply, actions } = await response.json();
 
-      const assistantMsg = addGuruMessage({ conversation_id: convId, role: 'assistant', content: reply, timestamp: new Date().toISOString(), starred: false });
-      setMessages(prev => [...prev, assistantMsg]);
+      if (reply) {
+        const assistantMsg = addGuruMessage({ conversation_id: convId, role: 'assistant', content: reply, timestamp: new Date().toISOString(), starred: false });
+        setMessages(prev => [...prev, assistantMsg]);
+      }
+
+      if (actions && actions.length > 0) {
+        setPendingActions(actions);
+      }
     } catch (err) {
-      const errMsg = addGuruMessage({ conversation_id: convId, role: 'assistant', content: "Sorry, I couldn't reach the Finance Guru right now. Check your API configuration.", timestamp: new Date().toISOString(), starred: false });
+      const errMsg = addGuruMessage({ conversation_id: convId, role: 'assistant', content: "Sorry, I couldn't reach the Finance Guru. Check API config.", timestamp: new Date().toISOString(), starred: false });
       setMessages(prev => [...prev, errMsg]);
     } finally {
       setLoading(false);
     }
   }
 
+  const categories = getCategories();
+  const clients = getClients();
+
+  function renderActionPreview(action: PendingAction) {
+    if (action.name !== 'create_transaction') return null;
+    const i = action.input as Record<string, unknown>;
+    const catName = categories.find(c => c.id === i.category_id)?.name || String(i.category_id);
+    const clientName = i.client_id ? clients.find(c => c.id === i.client_id)?.name : null;
+    return (
+      <div className="border-2 border-[#16C4BA] bg-[#f0fdfa] p-4 max-w-[80%]">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-2 h-2 bg-[#16C4BA] rounded-full animate-pulse" />
+          <p className="text-xs font-semibold text-[#0d9488] uppercase tracking-wide">Ready to create transaction</p>
+        </div>
+        <div className="space-y-1.5 text-sm">
+          <div className="flex justify-between"><span className="text-[#666]">Type</span><span className="font-medium">{String(i.transaction_type)} · {i.direction === 'in' ? 'In' : 'Out'}</span></div>
+          <div className="flex justify-between"><span className="text-[#666]">Amount</span><span className="font-semibold text-base">{formatCurrency(Number(i.amount))}</span></div>
+          <div className="flex justify-between"><span className="text-[#666]">Date</span><span>{String(i.date)}</span></div>
+          <div className="flex justify-between"><span className="text-[#666]">Category</span><span>{catName}</span></div>
+          <div className="flex justify-between"><span className="text-[#666]">Party</span><span>{String(i.party)}</span></div>
+          <div className="flex justify-between"><span className="text-[#666]">Description</span><span className="text-right max-w-[60%] truncate">{String(i.description)}</span></div>
+          {clientName && <div className="flex justify-between"><span className="text-[#666]">Client</span><span className="text-[#16C4BA] font-medium">{clientName}</span></div>}
+          {i.reason ? <div className="flex justify-between"><span className="text-[#666]">Reason</span><span className="text-right max-w-[60%] text-[#888] text-xs italic">{String(i.reason)}</span></div> : null}
+        </div>
+        <div className="flex gap-2 mt-4 pt-3 border-t border-[#bef2ee]">
+          <Button size="sm" variant="primary" icon={<Check className="w-3.5 h-3.5" />} onClick={() => confirmAction(action)} className="flex-1 justify-center">
+            Confirm & Create
+          </Button>
+          <Button size="sm" variant="ghost" icon={<X className="w-3.5 h-3.5" />} onClick={() => rejectAction(action)}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-full">
-      {/* Sidebar: conversation list */}
-      <div className="w-56 border-r border-[#e8e8e8] bg-white flex flex-col flex-shrink-0">
-        <div className="p-3 border-b border-[#e8e8e8]">
-          <Button variant="secondary" size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={newConversation} className="w-full justify-center">
+    <div className="flex h-full relative">
+      {/* Mobile sidebar overlay */}
+      {showSidebar && <div className="fixed inset-0 bg-black/50 z-30 lg:hidden" onClick={() => setShowSidebar(false)} />}
+
+      {/* Sidebar */}
+      <div className={`fixed lg:static inset-y-0 left-0 z-40 w-56 border-r border-[#e8e8e8] bg-white flex flex-col flex-shrink-0 transition-transform duration-200 ${showSidebar ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="p-3 border-b border-[#e8e8e8] flex items-center gap-2">
+          <Button variant="secondary" size="sm" icon={<Plus className="w-3.5 h-3.5" />} onClick={newConversation} className="flex-1 justify-center">
             New Chat
           </Button>
         </div>
@@ -156,11 +302,8 @@ export function FinanceGuruPage() {
             <p className="text-xs text-[#888] p-3">No conversations yet.</p>
           ) : (
             conversations.map(conv => (
-              <button
-                key={conv.id}
-                onClick={() => switchConversation(conv.id)}
-                className={`w-full text-left px-3 py-2.5 text-xs hover:bg-[#f7f7f5] transition-colors border-b border-[#f0f0f0] ${activeConvId === conv.id ? 'bg-[#f0f0f0]' : ''}`}
-              >
+              <button key={conv.id} onClick={() => switchConversation(conv.id)}
+                className={`w-full text-left px-3 py-2.5 text-xs hover:bg-[#f7f7f5] border-b border-[#f0f0f0] ${activeConvId === conv.id ? 'bg-[#f0f0f0]' : ''}`}>
                 <p className="font-medium text-[#333] truncate">{conv.title}</p>
                 <p className="text-[#888] mt-0.5">{new Date(conv.started_at).toLocaleDateString('en-IN')}</p>
               </button>
@@ -169,16 +312,17 @@ export function FinanceGuruPage() {
         </div>
       </div>
 
-      {/* Main chat area */}
+      {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-[#e8e8e8] bg-white flex-shrink-0">
-          <h1 className="font-['Barlow_Condensed'] text-2xl font-bold text-[#070707] uppercase">Finance Guru</h1>
-          <p className="text-xs text-[#888] mt-0.5">Your CFO — grounded in actual Respawn Media numbers</p>
+        <div className="px-4 lg:px-6 py-4 border-b border-[#e8e8e8] bg-white flex-shrink-0 flex items-center gap-3">
+          <button onClick={() => setShowSidebar(true)} className="lg:hidden text-[#666] hover:text-[#070707] text-sm">≡</button>
+          <div>
+            <h1 className="font-['Barlow_Condensed'] text-xl lg:text-2xl font-bold text-[#070707] uppercase">Finance Guru</h1>
+            <p className="text-xs text-[#888] mt-0.5 hidden sm:block">CFO + transaction entry · ask anything or describe a transaction</p>
+          </div>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-4">
           {messages.length === 0 && !loading && (
             <div className="max-w-xl">
               <div className="flex items-center gap-3 mb-6">
@@ -187,17 +331,14 @@ export function FinanceGuruPage() {
                 </div>
                 <div>
                   <p className="font-semibold text-[#070707]">Finance Guru</p>
-                  <p className="text-xs text-[#888]">Ask me anything about Respawn's finances</p>
+                  <p className="text-xs text-[#888]">Advice + transaction entry</p>
                 </div>
               </div>
               <p className="text-sm text-[#555] mb-4">Try one of these:</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {SUGGESTED_PROMPTS.map(p => (
-                  <button
-                    key={p}
-                    onClick={() => sendMessage(p)}
-                    className="text-left text-xs px-4 py-3 border border-[#e0e0e0] text-[#555] hover:border-[#16C4BA] hover:text-[#16C4BA] transition-colors"
-                  >
+                  <button key={p} onClick={() => sendMessage(p)}
+                    className="text-left text-xs px-4 py-3 border border-[#e0e0e0] text-[#555] hover:border-[#16C4BA] hover:text-[#16C4BA] transition-colors">
                     {p}
                   </button>
                 ))}
@@ -207,19 +348,24 @@ export function FinanceGuruPage() {
 
           {messages.map(msg => (
             <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] ${msg.role === 'user' ? 'bg-[#070707] text-white' : 'bg-white border border-[#e8e8e8]'} px-4 py-3`}>
+              <div className={`max-w-[85%] lg:max-w-[80%] ${msg.role === 'user' ? 'bg-[#070707] text-white' : 'bg-white border border-[#e8e8e8]'} px-4 py-3`}>
                 <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.content}</p>
                 <div className={`flex items-center gap-2 mt-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <span className="text-xs opacity-50">
-                    {new Date(msg.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
+                  <span className="text-xs opacity-50">{new Date(msg.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
                   {msg.role === 'assistant' && (
-                    <button onClick={() => toggleStar(msg)} className={`text-xs ${msg.starred ? 'text-[#F59E0B]' : 'text-[#ccc] hover:text-[#F59E0B]'}`}>
+                    <button onClick={() => toggleStar(msg)} className={`${msg.starred ? 'text-[#F59E0B]' : 'text-[#ccc] hover:text-[#F59E0B]'}`}>
                       <Star className="w-3 h-3" fill={msg.starred ? '#F59E0B' : 'none'} />
                     </button>
                   )}
                 </div>
               </div>
+            </div>
+          ))}
+
+          {/* Pending action confirmations */}
+          {pendingActions.map(action => (
+            <div key={action.id} className="flex justify-start">
+              {renderActionPreview(action)}
             </div>
           ))}
 
@@ -234,18 +380,14 @@ export function FinanceGuruPage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input */}
-        <div className="px-6 py-4 border-t border-[#e8e8e8] bg-white flex-shrink-0">
-          <div className="flex gap-3">
-            <input
-              value={input}
-              onChange={e => setInput(e.target.value)}
+        <div className="px-4 lg:px-6 py-3 lg:py-4 border-t border-[#e8e8e8] bg-white flex-shrink-0">
+          <div className="flex gap-2">
+            <input value={input} onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
-              placeholder="Ask about cash flow, expenses, client margins..."
-              className="flex-1 px-4 py-2.5 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA] focus:ring-1 focus:ring-[#16C4BA]"
-            />
+              placeholder="Ask, or describe a transaction..."
+              className="flex-1 px-3 lg:px-4 py-2.5 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA] focus:ring-1 focus:ring-[#16C4BA]" />
             <Button variant="primary" onClick={() => sendMessage(input)} loading={loading} icon={<Send className="w-4 h-4" />}>
-              Send
+              <span className="hidden sm:inline">Send</span>
             </Button>
           </div>
         </div>

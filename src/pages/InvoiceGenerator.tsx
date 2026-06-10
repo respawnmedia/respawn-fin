@@ -119,7 +119,7 @@ export function InvoiceGeneratorPage() {
   }
 
   return (
-    <div className="p-6 max-w-[1100px]">
+    <div className="p-4 lg:p-6 max-w-[1100px]">
       <style>{`@media print { .no-print { display: none !important; } body { print-color-adjust: exact; } }`}</style>
       <div className="no-print">
         <PageHeader
@@ -203,15 +203,20 @@ export function InvoiceGeneratorPage() {
       <div ref={printRef} className="bg-white border border-[#e8e8e8] print:border-0 print:shadow-none">
         {/* Header */}
         <div className="flex justify-between items-start p-8 border-b border-[#e8e8e8]">
-          <div>
-            <h1 className="font-['Barlow_Condensed'] text-3xl font-black text-[#070707] uppercase tracking-wider">{settings.company_name}</h1>
-            <div className="text-xs text-[#666] mt-1 space-y-0.5">
-              {settings.address && <p>{settings.address}</p>}
-              <p>{[settings.city, settings.state, settings.pincode].filter(Boolean).join(', ')}</p>
-              {settings.phone && <p>Ph: {settings.phone}</p>}
-              {settings.email && <p>{settings.email}</p>}
-              {settings.gstin && <p>GSTIN: {settings.gstin}</p>}
-              {settings.pan && <p>PAN: {settings.pan}</p>}
+          <div className="flex items-start gap-4">
+            {settings.logo_base64 && (
+              <img src={settings.logo_base64} alt="Logo" className="w-20 h-20 object-contain flex-shrink-0" />
+            )}
+            <div>
+              <h1 className="font-['Barlow_Condensed'] text-3xl font-black text-[#070707] uppercase tracking-wider">{settings.company_name}</h1>
+              <div className="text-xs text-[#666] mt-1 space-y-0.5">
+                {settings.address && <p>{settings.address}</p>}
+                <p>{[settings.city, settings.state, settings.pincode].filter(Boolean).join(', ')}</p>
+                {settings.phone && <p>Ph: {settings.phone}</p>}
+                {settings.email && <p>{settings.email}</p>}
+                {settings.gstin && <p>GSTIN: {settings.gstin}</p>}
+                {settings.pan && <p>PAN: {settings.pan}</p>}
+              </div>
             </div>
           </div>
           <div className="text-right">
@@ -309,6 +314,35 @@ export function InvoiceGeneratorPage() {
           <Button variant="primary" onClick={saveSettings}>Save Settings</Button>
         </>}>
         <div className="space-y-5">
+          <div>
+            <p className="text-xs font-semibold text-[#555] uppercase tracking-wide mb-3">Logo</p>
+            <div className="flex items-center gap-4">
+              {settingsForm.logo_base64 ? (
+                <div className="flex items-center gap-3">
+                  <img src={settingsForm.logo_base64} alt="Logo" className="w-20 h-20 object-contain border border-[#e8e8e8]" />
+                  <button type="button" onClick={() => setSettingsForm({ ...settingsForm, logo_base64: undefined })} className="text-xs text-[#DC2626] hover:underline">
+                    Remove logo
+                  </button>
+                </div>
+              ) : (
+                <label className="cursor-pointer">
+                  <span className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-[#070707] text-white hover:bg-[#1a1a1a]">
+                    Upload Logo
+                  </span>
+                  <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    if (file.size > 500000) { toast('Logo too large (max 500KB). Compress it first.', 'error'); return; }
+                    const reader = new FileReader();
+                    reader.onload = ev => setSettingsForm({ ...settingsForm, logo_base64: ev.target?.result as string });
+                    reader.readAsDataURL(file);
+                  }} />
+                </label>
+              )}
+              <p className="text-xs text-[#888]">PNG or JPG, max 500KB. Square format works best.</p>
+            </div>
+          </div>
+
           <div>
             <p className="text-xs font-semibold text-[#555] uppercase tracking-wide mb-3">Company Details</p>
             <div className="grid grid-cols-2 gap-3">

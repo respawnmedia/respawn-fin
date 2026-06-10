@@ -110,7 +110,7 @@ export function TeamMembersPage() {
   const typeColor: Record<TeamMemberType, 'green' | 'blue' | 'amber'> = { employee: 'green', freelancer: 'blue', vendor: 'amber' };
 
   return (
-    <div className="p-6 max-w-[1100px]">
+    <div className="p-4 lg:p-6 max-w-[1100px]">
       <PageHeader
         title="Team & Vendors"
         subtitle="Track people costs and how they map to clients"
@@ -240,29 +240,54 @@ export function TeamMembersPage() {
 
           {/* Client allocations */}
           <div>
-            <p className="text-xs font-semibold text-[#555] uppercase tracking-wide mb-1">Client Cost Allocation</p>
-            <p className="text-xs text-[#888] mb-3">
-              What % of this person's time/cost goes to each client?
-              {totalAllocated > 0 && <span className={`ml-2 font-medium ${totalAllocated > 100 ? 'text-[#DC2626]' : totalAllocated === 100 ? 'text-[#16A34A]' : 'text-[#888]'}`}>
-                {totalAllocated}% allocated, {100 - totalAllocated}% overhead
-              </span>}
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              {clients.filter(c => c.status === 'active').map(c => {
-                const alloc = form.client_allocations.find(a => a.client_id === c.id);
-                return (
-                  <div key={c.id} className="flex items-center gap-2">
-                    <span className="text-xs text-[#555] flex-1 truncate">{c.name}</span>
-                    <input type="number" min="0" max="100"
-                      value={alloc?.percentage || ''}
-                      onChange={e => updateAllocation(c.id, e.target.value)}
-                      placeholder="0"
-                      className="w-16 px-2 py-1 text-xs text-right border border-[#ddd] focus:outline-none focus:border-[#16C4BA]" />
-                    <span className="text-xs text-[#888]">%</span>
-                  </div>
-                );
-              })}
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs font-semibold text-[#555] uppercase tracking-wide">Client Cost Allocation</p>
+              {totalAllocated > 0 && (
+                <span className={`text-xs font-medium ${totalAllocated > 100 ? 'text-[#DC2626]' : totalAllocated === 100 ? 'text-[#16A34A]' : 'text-[#888]'}`}>
+                  {totalAllocated}% allocated · {Math.max(0, 100 - totalAllocated)}% overhead
+                </span>
+              )}
             </div>
+            <p className="text-xs text-[#888] mb-3">Pick the clients this person works on, then set time %</p>
+
+            {/* Selected clients with % input */}
+            <div className="space-y-1.5 mb-2">
+              {form.client_allocations.length === 0 ? (
+                <p className="text-xs text-[#aaa] italic py-2">No clients added yet. Pick from the dropdown below.</p>
+              ) : (
+                form.client_allocations.map(alloc => {
+                  const client = clients.find(c => c.id === alloc.client_id);
+                  if (!client) return null;
+                  return (
+                    <div key={alloc.client_id} className="flex items-center gap-2 bg-[#f7f7f5] px-3 py-1.5">
+                      <span className="text-sm text-[#070707] flex-1 truncate">{client.name}</span>
+                      <input type="number" min="0" max="100"
+                        value={alloc.percentage || ''}
+                        onChange={e => updateAllocation(alloc.client_id, e.target.value)}
+                        placeholder="0"
+                        className="w-16 px-2 py-1 text-xs text-right border border-[#ddd] focus:outline-none focus:border-[#16C4BA]" />
+                      <span className="text-xs text-[#888]">%</span>
+                      <button type="button" onClick={() => setForm(f => ({ ...f, client_allocations: f.client_allocations.filter(a => a.client_id !== alloc.client_id) }))}
+                        className="text-[#ccc] hover:text-[#DC2626]"><Trash2 className="w-3 h-3" /></button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Picker for adding clients */}
+            <select value="" onChange={e => {
+              if (e.target.value) {
+                setForm(f => ({ ...f, client_allocations: [...f.client_allocations, { client_id: e.target.value, percentage: 0 }] }));
+              }
+            }}
+              className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]">
+              <option value="">+ Add client to allocation...</option>
+              {clients
+                .filter(c => c.status === 'active' && !form.client_allocations.some(a => a.client_id === c.id))
+                .map(c => <option key={c.id} value={c.id}>{c.name}</option>)
+              }
+            </select>
           </div>
 
           <div className="grid grid-cols-2 gap-4">

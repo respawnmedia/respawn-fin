@@ -112,7 +112,7 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="p-6 max-w-[900px]">
+    <div className="p-4 lg:p-6 max-w-[900px]">
       <PageHeader title="Settings" />
 
       {/* Tabs */}

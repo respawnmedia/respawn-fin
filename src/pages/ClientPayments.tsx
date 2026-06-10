@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, AlertTriangle, DollarSign, TrendingUp } from 'lucide-react';
+import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, AlertTriangle, DollarSign, TrendingUp, CreditCard, CheckCircle } from 'lucide-react';
 import { PageHeader } from '@/components/layout/Layout';
 import { Button } from '@/components/ui/Button';
 import { Input, Select, Textarea } from '@/components/ui/Input';
@@ -15,6 +15,7 @@ import {
   getExpenseAttributions, addExpenseAttribution,
   getCategories, addAuditEntry,
 } from '@/lib/storage';
+import { getPaymentRecords, addPaymentRecord, deletePaymentRecord, getPaymentsByClient, getTotalPaidByClient, type PaymentRecord } from '@/lib/payments';
 import { formatCurrency, formatDate, generateInvoiceNo, currentMonth, formatMonth } from '@/utils/format';
 import type { Client, Invoice, BillingCycle, PaymentMethod, InvoiceStatus, ClientCostItem, ClientMonthlyCostLine } from '@/types';
 
@@ -45,11 +46,19 @@ const INVOICE_STATUS_OPTIONS: { value: InvoiceStatus; label: string }[] = [
 export function ClientPaymentsPage() {
   const toast = useToast();
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
-  const [expandedTab, setExpandedTab] = useState<'invoices' | 'costs'>('invoices');
+  const [expandedTab, setExpandedTab] = useState<'invoices' | 'costs' | 'payments'>('payments');
   const [clientModal, setClientModal] = useState(false);
   const [invoiceModal, setInvoiceModal] = useState<string | null>(null);
   const [costModal, setCostModal] = useState<{ clientId: string; month: string } | null>(null);
   const [addVerticalModal, setAddVerticalModal] = useState(false);
+  const [paymentModal, setPaymentModal] = useState<string | null>(null); // client id
+  const [paymentForm, setPaymentForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    amount: '',
+    mode: 'Bank Transfer' as PaymentMethod,
+    for_month: currentMonth(),
+    notes: '',
+  });
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   const [deleteClientId, setDeleteClientId] = useState<string | null>(null);
@@ -238,6 +247,22 @@ export function ClientPaymentsPage() {
     setCostModal(null);
   }
 
+  function savePayment() {
+    if (!paymentModal || !paymentForm.amount) { toast('Enter an amount', 'error'); return; }
+    addPaymentRecord({
+      client_id: paymentModal,
+      date: paymentForm.date,
+      amount: Number(paymentForm.amount),
+      mode: paymentForm.mode,
+      for_month: paymentForm.for_month,
+      notes: paymentForm.notes,
+    });
+    addAuditEntry({ user_id: 'founder', action: 'RECORD_PAYMENT', entity: 'payment_record', entity_id: paymentModal });
+    toast('Payment recorded', 'success');
+    setPaymentModal(null);
+    setPaymentForm({ date: new Date().toISOString().split('T')[0], amount: '', mode: 'Bank Transfer', for_month: currentMonth(), notes: '' });
+  }
+
   function getClientInvoices(clientId: string) {
     return invoices.filter(i => i.client_id === clientId).sort((a, b) => new Date(b.invoice_date).getTime() - new Date(a.invoice_date).getTime());
   }
@@ -336,13 +361,63 @@ export function ClientPaymentsPage() {
                   <div className="border-t border-[#f0f0f0]">
                     {/* Tab row */}
                     <div className="flex border-b border-[#f0f0f0]">
-                      {(['invoices', 'costs'] as const).map(tab => (
+                      {(['payments', 'invoices', 'costs'] as const).map(tab => (
                         <button key={tab} onClick={() => setExpandedTab(tab)}
                           className={`px-5 py-2.5 text-xs font-medium transition-colors ${expandedTab === tab ? 'text-[#070707] border-b-2 border-[#16C4BA] -mb-px' : 'text-[#888] hover:text-[#555]'}`}>
-                          {tab === 'invoices' ? 'Invoices' : 'Monthly Costs'}
+                          {tab === 'payments' ? 'Payments' : tab === 'invoices' ? 'Invoices' : 'Monthly Costs'}
                         </button>
                       ))}
                     </div>
+
+                    {/* Payments tab — simple "received X on Y" records */}
+                    {expandedTab === 'payments' && (
+                      <div className="px-5 py-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-medium text-[#888] uppercase tracking-wide">Payment History</span>
+                          <Button size="sm" variant="primary" icon={<Plus className="w-3 h-3" />} onClick={() => setPaymentModal(client.id)}>
+                            Record Payment
+                          </Button>
+                        </div>
+                        {(() => {
+                          const payments = getPaymentsByClient(client.id);
+                          const totalPaid = getTotalPaidByClient(client.id);
+                          if (payments.length === 0) return (
+                            <div className="py-6 text-center">
+                              <p className="text-sm text-[#888] mb-2">No payments recorded yet.</p>
+                              <p className="text-xs text-[#aaa]">Record when a payment is received — date, amount, mode, which month it covers.</p>
+                            </div>
+                          );
+                          return (
+                            <>
+                              <div className="mb-3 flex items-center gap-4 text-sm">
+                                <span className="text-[#888]">Total received:</span>
+                                <span className="font-bold text-[#16A34A]">{formatCurrency(totalPaid)}</span>
+                              </div>
+                              <div className="space-y-0">
+                                {payments.map(p => (
+                                  <div key={p.id} className="flex items-center justify-between py-2.5 border-b border-[#f5f5f5] last:border-0">
+                                    <div className="flex items-center gap-3">
+                                      <div className="w-7 h-7 bg-[#dcfce7] flex items-center justify-center flex-shrink-0">
+                                        <CheckCircle className="w-3.5 h-3.5 text-[#16A34A]" />
+                                      </div>
+                                      <div>
+                                        <p className="text-sm font-medium text-[#070707]">{formatCurrency(p.amount)}</p>
+                                        <p className="text-xs text-[#888]">
+                                          {formatDate(p.date)} · {p.mode} · for {formatMonth(p.for_month)}
+                                        </p>
+                                        {p.notes && <p className="text-xs text-[#aaa] italic">{p.notes}</p>}
+                                      </div>
+                                    </div>
+                                    <button onClick={() => { deletePaymentRecord(p.id); toast('Payment record deleted', 'info'); }}
+                                      className="text-[#ccc] hover:text-[#DC2626] ml-3"><Trash2 className="w-3.5 h-3.5" /></button>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
 
                     {/* Invoices tab */}
                     {expandedTab === 'invoices' && (
@@ -597,6 +672,43 @@ export function ClientPaymentsPage() {
             </div>
           );
         })()}
+      </Modal>
+
+      {/* ── Payment Record Modal ── */}
+      <Modal open={!!paymentModal} onClose={() => setPaymentModal(null)} title="Record Payment Received" width="sm"
+        footer={<>
+          <Button variant="ghost" onClick={() => setPaymentModal(null)}>Cancel</Button>
+          <Button variant="primary" icon={<CheckCircle className="w-4 h-4" />} onClick={savePayment}>Record Payment</Button>
+        </>}>
+        <div className="space-y-4">
+          {paymentModal && (() => {
+            const client = clients.find(c => c.id === paymentModal);
+            return (
+              <div className="bg-[#f7f7f5] px-3 py-2 text-sm">
+                <span className="text-[#888]">Client: </span>
+                <span className="font-semibold">{client?.name}</span>
+                <span className="text-[#888] ml-3">Retainer: </span>
+                <span className="font-semibold">{formatCurrency(client?.retainer_amount || 0)}</span>
+              </div>
+            );
+          })()}
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="Date Received" type="date" value={paymentForm.date} onChange={e => setPaymentForm({ ...paymentForm, date: e.target.value })} />
+            <Input label="Amount (₹)" type="number" value={paymentForm.amount} onChange={e => setPaymentForm({ ...paymentForm, amount: e.target.value })} placeholder="0" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Select label="Payment Mode" value={paymentForm.mode}
+              onChange={e => setPaymentForm({ ...paymentForm, mode: e.target.value as PaymentMethod })}
+              options={[{ value: 'UPI', label: 'UPI' }, { value: 'Bank Transfer', label: 'Bank Transfer' }, { value: 'Cash', label: 'Cash' }, { value: 'Cheque', label: 'Cheque' }]} />
+            <div>
+              <label className="text-xs font-medium text-[#555] uppercase tracking-wide block mb-1">For Month</label>
+              <input type="month" value={paymentForm.for_month} onChange={e => setPaymentForm({ ...paymentForm, for_month: e.target.value })}
+                className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]" />
+            </div>
+          </div>
+          <Input label="Notes (optional)" value={paymentForm.notes} onChange={e => setPaymentForm({ ...paymentForm, notes: e.target.value })}
+            placeholder="e.g. Final payment for May, partial payment..." />
+        </div>
       </Modal>
 
       <ConfirmModal open={!!deleteClientId} onClose={() => setDeleteClientId(null)}

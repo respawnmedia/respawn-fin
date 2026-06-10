@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { APP_VERSION } from '@/utils/version';
+import { InsightsTray } from '@/components/ui/InsightsTray';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -82,6 +83,7 @@ export function Layout({ children }: LayoutProps) {
             <span className="font-medium text-[#070707]">{currentPage?.label || 'App'}</span>
           </div>
           <div className="ml-auto flex items-center gap-3">
+            <InsightsTray />
             <span className="text-xs text-[#888] hidden sm:block">
               {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
             </span>

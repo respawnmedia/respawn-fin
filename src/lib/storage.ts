@@ -407,3 +407,106 @@ export function importAllData(data: Record<string, unknown>): void {
 export function clearAllData(): void {
   Object.values(KEYS).forEach(key => localStorage.removeItem(key));
 }
+
+// ─── Recurring Entry Templates ────────────────────────────────────────────────
+export interface RecurringTemplate {
+  id: string;
+  label: string;
+  type: 'cash' | 'bank';
+  direction: 'in' | 'out';
+  amount: number;
+  category_id: string;
+  party: string;
+  description: string;
+  client_id?: string;
+  day_of_month: number; // 1-28, which day to suggest it
+  active: boolean;
+}
+
+const RT_KEY = 'rf:recurring_templates';
+export function getRecurringTemplates(): RecurringTemplate[] {
+  try { return JSON.parse(localStorage.getItem(RT_KEY) || '[]'); } catch { return []; }
+}
+export function addRecurringTemplate(t: Omit<RecurringTemplate, 'id'>): RecurringTemplate {
+  const n = { ...t, id: crypto.randomUUID() };
+  const all = getRecurringTemplates();
+  localStorage.setItem(RT_KEY, JSON.stringify([...all, n]));
+  return n;
+}
+export function updateRecurringTemplate(id: string, u: Partial<RecurringTemplate>): void {
+  localStorage.setItem(RT_KEY, JSON.stringify(getRecurringTemplates().map(t => t.id === id ? { ...t, ...u } : t)));
+}
+export function deleteRecurringTemplate(id: string): void {
+  localStorage.setItem(RT_KEY, JSON.stringify(getRecurringTemplates().filter(t => t.id !== id)));
+}
+
+// ─── Expense Approval Queue ───────────────────────────────────────────────────
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+export interface ExpenseApproval {
+  id: string;
+  submitted_by: string;
+  date: string;
+  amount: number;
+  category_id: string;
+  party: string;
+  description: string;
+  purpose: string;
+  client_id?: string;
+  receipt_description?: string;
+  status: ApprovalStatus;
+  reviewed_by?: string;
+  reviewed_at?: string;
+  rejection_reason?: string;
+  created_at: string;
+}
+
+const EA_KEY = 'rf:expense_approvals';
+export function getExpenseApprovals(): ExpenseApproval[] {
+  try { return JSON.parse(localStorage.getItem(EA_KEY) || '[]'); } catch { return []; }
+}
+export function addExpenseApproval(e: Omit<ExpenseApproval, 'id' | 'created_at'>): ExpenseApproval {
+  const n: ExpenseApproval = { ...e, id: crypto.randomUUID(), created_at: new Date().toISOString() };
+  localStorage.setItem(EA_KEY, JSON.stringify([n, ...getExpenseApprovals()]));
+  return n;
+}
+export function updateExpenseApproval(id: string, u: Partial<ExpenseApproval>): void {
+  localStorage.setItem(EA_KEY, JSON.stringify(getExpenseApprovals().map(a => a.id === id ? { ...a, ...u } : a)));
+}
+
+// ─── Payment Reminders config ─────────────────────────────────────────────────
+export interface PaymentReminderConfig {
+  enabled: boolean;
+  remind_day: number;       // day of month to send reminder (e.g. 5 = remind on 5th)
+  whatsapp_numbers: string[]; // comma-separated +91XXXXXXXXXX
+  whatsapp_enabled: boolean;
+}
+const PR_KEY = 'rf:payment_reminder_config';
+export function getPaymentReminderConfig(): PaymentReminderConfig {
+  try { return JSON.parse(localStorage.getItem(PR_KEY) || 'null') || { enabled: true, remind_day: 10, whatsapp_numbers: [], whatsapp_enabled: false }; }
+  catch { return { enabled: true, remind_day: 10, whatsapp_numbers: [], whatsapp_enabled: false }; }
+}
+export function setPaymentReminderConfig(c: PaymentReminderConfig): void {
+  localStorage.setItem(PR_KEY, JSON.stringify(c));
+}
+
+// ─── Monthly Close Checklist ──────────────────────────────────────────────────
+export interface MonthlyCloseState {
+  month: string;
+  completed_steps: string[];
+  closed_at?: string;
+  notes?: string;
+}
+const MC_KEY = 'rf:monthly_close';
+export function getMonthlyCloseState(month: string): MonthlyCloseState {
+  try {
+    const all: MonthlyCloseState[] = JSON.parse(localStorage.getItem(MC_KEY) || '[]');
+    return all.find(s => s.month === month) || { month, completed_steps: [] };
+  } catch { return { month, completed_steps: [] }; }
+}
+export function saveMonthlyCloseState(state: MonthlyCloseState): void {
+  try {
+    const all: MonthlyCloseState[] = JSON.parse(localStorage.getItem(MC_KEY) || '[]');
+    const updated = all.filter(s => s.month !== state.month);
+    localStorage.setItem(MC_KEY, JSON.stringify([...updated, state]));
+  } catch { /* ignore */ }
+}

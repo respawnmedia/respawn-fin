@@ -11,7 +11,9 @@ import {
   getBankTransactions, addBankTransactions,
   updateBankTransaction, deleteBankTransaction,
   getCategories, getNarrationMap, upsertNarrationMap, addAuditEntry,
+  getClients,
 } from '@/lib/storage';
+import { autoLinkToCosting } from '@/lib/auto-cost-link';
 import { formatCurrency, formatDate, currentMonth, formatMonth, monthsAgo } from '@/utils/format';
 import type { BankTransaction } from '@/types';
 
@@ -34,7 +36,7 @@ export function BankTransactionsPage() {
   const [editTxn, setEditTxn] = useState<BankTransaction | null>(null);
   const [committing, setCommitting] = useState(false);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
-  const [editForm, setEditForm] = useState({ category_id: '', reason: '', narration: '' });
+  const [editForm, setEditForm] = useState({ category_id: '', reason: '', narration: '', client_id: '', purpose: '' });
 
   const categories = getCategories();
   const statements = getBankStatements();
@@ -162,7 +164,9 @@ export function BankTransactionsPage() {
       debit: t.debit, credit: t.credit, balance: t.balance, ref_no: t.ref_no,
       category_id: t.category_id, tags: [] as string[], confidence_score: t.confidence_score,
     }));
-    addBankTransactions(txns);
+    const newTxns = addBankTransactions(txns);
+    // Auto-link any client-tagged transactions to cost sheets
+    newTxns.forEach(t => autoLinkToCosting(t, 'bank'));
     updateBankStatement(reviewStatementId, { status: 'committed' });
     // Learn category patterns
     reviewData.forEach(t => {
@@ -178,15 +182,17 @@ export function BankTransactionsPage() {
 
   function openEdit(t: BankTransaction) {
     setEditTxn(t);
-    setEditForm({ category_id: t.category_id, reason: t.reason || '', narration: t.narration });
+    setEditForm({ category_id: t.category_id, reason: t.reason || '', narration: t.narration, client_id: t.client_id || '', purpose: t.reason || '' });
   }
 
   function saveEdit() {
     if (!editTxn) return;
-    updateBankTransaction(editTxn.id, { category_id: editForm.category_id, reason: editForm.reason, narration: editForm.narration });
-    // Learn the new category for this narration pattern
+    const updates = { category_id: editForm.category_id, reason: editForm.reason, narration: editForm.narration, client_id: editForm.client_id || undefined };
+    updateBankTransaction(editTxn.id, updates);
     const key = editForm.narration.slice(0, 25).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
     if (key.length > 3) upsertNarrationMap(key, editForm.category_id);
+    const updated = { ...editTxn, ...updates };
+    if (updated.client_id) autoLinkToCosting(updated, 'bank');
     toast('Transaction updated & pattern learned', 'success');
     setEditTxn(null);
   }
@@ -462,12 +468,20 @@ export function BankTransactionsPage() {
                 <option value="">Select category</option>
                 {catOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
-              <p className="text-xs text-[#888] mt-1">This will be remembered for similar transactions next time.</p>
+              <p className="text-xs text-[#888] mt-1">Remembered for similar narrations next time.</p>
             </div>
             <div>
-              <label className="text-xs font-medium text-[#555] uppercase tracking-wide block mb-1">Reason / Note</label>
+              <label className="text-xs font-medium text-[#555] uppercase tracking-wide block mb-1">Link to Client → auto-updates cost sheet</label>
+              <select value={editForm.client_id} onChange={e => setEditForm({ ...editForm, client_id: e.target.value })}
+                className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]">
+                <option value="">Not client-specific</option>
+                {getClients().filter(c => c.status === 'active').map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-[#555] uppercase tracking-wide block mb-1">Purpose / Reason</label>
               <input value={editForm.reason} onChange={e => setEditForm({ ...editForm, reason: e.target.value })}
-                placeholder="e.g. Shoot for Tissera, June batch"
+                placeholder="e.g. Shoot for Tissera June, Ravi's retainer, Travel for client visit"
                 className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]" />
             </div>
           </div>

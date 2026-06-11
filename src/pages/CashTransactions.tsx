@@ -1,16 +1,18 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Trash2, Edit2, Wallet, Filter, Info } from 'lucide-react';
+import { Plus, Trash2, Edit2, Wallet, Filter, Info, Camera } from 'lucide-react';
 import { PageHeader } from '@/components/layout/Layout';
 import { Button } from '@/components/ui/Button';
 import { Input, Select, Textarea } from '@/components/ui/Input';
 import { Card, MetricCard } from '@/components/ui/Card';
 import { Modal, ConfirmModal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/ToastProvider';
+import { NotebookImport } from '@/components/ui/NotebookImport';
 import {
   getCashTransactions, addCashTransaction, updateCashTransaction,
   deleteCashTransaction, getCategories, computeCashBalance,
   getAppSettings, addAuditEntry, getClients,
 } from '@/lib/storage';
+import { autoLinkToCosting } from '@/lib/auto-cost-link';
 import { formatCurrency, formatDate, currentMonth } from '@/utils/format';
 import type { CashTransaction, CashType } from '@/types';
 
@@ -43,6 +45,7 @@ function parseGSTFromTags(txn: CashTransaction): { gst_included: boolean; gst_ra
 export function CashTransactionsPage() {
   const toast = useToast();
   const [modalOpen, setModalOpen] = useState(false);
+  const [notebookModal, setNotebookModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [filterMonth, setFilterMonth] = useState(currentMonth());
@@ -166,6 +169,7 @@ export function CashTransactionsPage() {
       toast('Transaction updated', 'success');
     } else {
       const t = addCashTransaction(payload);
+      autoLinkToCosting(t, 'cash');
       addAuditEntry({ user_id: 'founder', action: 'ADD_CASH_TXN', entity: 'cash_transaction', entity_id: t.id });
       if (form.gst_applies) {
         toast(`Added ₹${Number(form.amount).toLocaleString()} (incl. ₹${gstAmount.toFixed(0)} GST)`, 'success');
@@ -189,7 +193,14 @@ export function CashTransactionsPage() {
       <PageHeader
         title="Cash Transactions"
         subtitle={`Cash holder: ${settings.cash_holder_custom || settings.cash_holder}`}
-        actions={<Button variant="primary" icon={<Plus className="w-4 h-4" />} onClick={openAdd}>Add Transaction</Button>}
+        actions={
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" icon={<Camera className="w-4 h-4" />} onClick={() => setNotebookModal(true)}>
+              Scan Notebook
+            </Button>
+            <Button variant="primary" icon={<Plus className="w-4 h-4" />} onClick={openAdd}>Add</Button>
+          </div>
+        }
       />
 
       {/* Metrics */}
@@ -371,6 +382,12 @@ export function CashTransactionsPage() {
       <ConfirmModal open={!!deleteId} onClose={() => setDeleteId(null)}
         onConfirm={() => { if (deleteId) { deleteCashTransaction(deleteId); toast('Deleted', 'info'); setDeleteId(null); } }}
         title="Delete Transaction" message="Delete this cash transaction?" />
+
+      {/* Notebook import modal */}
+      <Modal open={notebookModal} onClose={() => setNotebookModal(false)}
+        title="Scan Notebook" width="lg">
+        <NotebookImport onDone={() => { setNotebookModal(false); toast('Transactions imported from notebook', 'success'); }} />
+      </Modal>
     </div>
   );
 }

@@ -10,6 +10,8 @@ import { CashTransactionsPage } from '@/pages/CashTransactions';
 import { ClientPaymentsPage } from '@/pages/ClientPayments';
 import { TeamMembersPage } from '@/pages/TeamMembers';
 import { InvoiceGeneratorPage } from '@/pages/InvoiceGenerator';
+import { ExpenseApprovalsPage } from '@/pages/ExpenseApprovals';
+import { RecurringTemplatesPage } from '@/pages/RecurringTemplates';
 import { TaxAuditPage } from '@/pages/TaxAudit';
 import { FinanceGuruPage } from '@/pages/FinanceGuru';
 import { SettingsPage } from '@/pages/Settings';
@@ -28,6 +30,8 @@ function AppRoutes() {
         <Route path="/clients" element={<ClientPaymentsPage />} />
         <Route path="/team" element={<TeamMembersPage />} />
         <Route path="/invoices" element={<InvoiceGeneratorPage />} />
+        <Route path="/approvals" element={<ExpenseApprovalsPage />} />
+        <Route path="/recurring" element={<RecurringTemplatesPage />} />
         <Route path="/tax" element={<TaxAuditPage />} />
         <Route path="/guru" element={<FinanceGuruPage />} />
         <Route path="/settings" element={<SettingsPage />} />
@@ -41,22 +45,10 @@ export default function App() {
   const [syncing, setSyncing] = useState(true);
 
   useEffect(() => {
-    // First: pull all data from Supabase into localStorage (if env vars set)
     pullFromSupabase()
-      .then(() => {
-        // Then seed any defaults that are missing
-        seedDefaultData();
-        setSyncing(false);
-      })
-      .catch(() => {
-        seedDefaultData();
-        setSyncing(false);
-      });
-
-    // Refresh every 30 seconds to catch changes from other devices
-    const interval = setInterval(() => {
-      pullFromSupabase().catch(() => {});
-    }, 30000);
+      .then(() => { seedDefaultData(); setSyncing(false); })
+      .catch(() => { seedDefaultData(); setSyncing(false); });
+    const interval = setInterval(() => pullFromSupabase().catch(() => {}), 30000);
     return () => clearInterval(interval);
   }, []);
 

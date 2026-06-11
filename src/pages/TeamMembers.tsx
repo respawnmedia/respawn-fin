@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Edit2, Trash2, Users, TrendingUp } from 'lucide-react';
+import { Plus, Edit2, Trash2, Users, TrendingUp, Info } from 'lucide-react';
 import { PageHeader } from '@/components/layout/Layout';
 import { Button } from '@/components/ui/Button';
 import { Input, Select, Textarea } from '@/components/ui/Input';
@@ -7,8 +7,8 @@ import { Card, MetricCard } from '@/components/ui/Card';
 import { Modal, ConfirmModal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { useToast } from '@/components/ui/ToastProvider';
-import { getTeamMembers, addTeamMember, updateTeamMember, deleteTeamMember, getClients, getBankTransactions, getCashTransactions, getCategories, addAuditEntry } from '@/lib/storage';
-import { formatCurrency, monthsAgo } from '@/utils/format';
+import { getTeamMembers, addTeamMember, updateTeamMember, deleteTeamMember, getClients, addAuditEntry } from '@/lib/storage';
+import { formatCurrency } from '@/utils/format';
 import type { TeamMember, TeamMemberType, TeamClientAllocation } from '@/types';
 
 const TYPE_OPTIONS: { value: TeamMemberType; label: string }[] = [
@@ -29,43 +29,18 @@ export function TeamMembersPage() {
     monthly_cost: '', skills: '', contact: '', active: true,
     joined_date: new Date().toISOString().split('T')[0], notes: '',
     client_allocations: [] as TeamClientAllocation[],
-    is_variable_cost: false,
   };
   const [form, setForm] = useState(emptyForm);
 
   const members = getTeamMembers();
   const clients = getClients();
-  const categories = getCategories();
-  const bankTxns = getBankTransactions();
-  const cashTxns = getCashTransactions();
   const filtered = filterType ? members.filter(m => m.type === filterType) : members;
-
-  // ── Compute 3-month average for variable-cost members ─────────────────────
-  function computeAvgCost(member: TeamMember): { avg: number; months: { month: string; amount: number }[] } {
-    const last3 = [0, 1, 2].map(i => monthsAgo(i));
-    const freelanceCatIds = new Set(categories.filter(c => ['Freelancer Fees', 'Professional Fees', 'Vendor Payment'].includes(c.name)).map(c => c.id));
-    const months = last3.map(month => {
-      const nameLower = member.name.toLowerCase();
-      const bankPaid = bankTxns.filter(t =>
-        t.date.startsWith(month) &&
-        t.debit > 0 &&
-        (t.narration.toLowerCase().includes(nameLower) || (t.notes && t.notes.toLowerCase().includes(nameLower)))
-      ).reduce((s, t) => s + t.debit, 0);
-      const cashPaid = cashTxns.filter(t =>
-        t.date.startsWith(month) &&
-        t.type === 'Cash Out' &&
-        (t.party.toLowerCase().includes(nameLower) || t.description.toLowerCase().includes(nameLower))
-      ).reduce((s, t) => s + t.amount, 0);
-      return { month, amount: bankPaid + cashPaid };
-    });
-    const total = months.reduce((s, m) => s + m.amount, 0);
-    const avg = total / 3;
-    return { avg, months };
-  }
 
   const metrics = useMemo(() => {
     const active = members.filter(m => m.active);
-    const totalMonthlyCost = active.reduce((s, m) => s + m.monthly_cost, 0);
+    const totalMonthlyCost = active
+      .filter(m => m.type === 'employee') // only fixed salaries in monthly total
+      .reduce((s, m) => s + m.monthly_cost, 0);
     return {
       totalMonthlyCost,
       employees: active.filter(m => m.type === 'employee').length,
@@ -76,7 +51,8 @@ export function TeamMembersPage() {
 
   const clientCostBreakdown = useMemo(() => {
     const breakdown: Record<string, number> = {};
-    members.filter(m => m.active).forEach(m => {
+    // Only employees with fixed salaries contribute to this breakdown
+    members.filter(m => m.active && m.type === 'employee').forEach(m => {
       m.client_allocations.forEach(a => {
         breakdown[a.client_id] = (breakdown[a.client_id] || 0) + (m.monthly_cost * a.percentage / 100);
       });
@@ -93,7 +69,6 @@ export function TeamMembersPage() {
       contact: m.contact || '', active: m.active,
       joined_date: m.joined_date, notes: m.notes || '',
       client_allocations: m.client_allocations,
-      is_variable_cost: (m as TeamMember & { is_variable_cost?: boolean }).is_variable_cost || false,
     });
     setEditing(m);
     setModal(true);
@@ -128,22 +103,30 @@ export function TeamMembersPage() {
     <div className="p-4 lg:p-6 max-w-[1100px]">
       <PageHeader
         title="Team & Vendors"
-        subtitle="People costs, client allocation, 3-month averages for variable pay"
+        subtitle="Employees, freelancers, and vendors. Freelancer costs flow in automatically from transactions."
         actions={<Button variant="primary" icon={<Plus className="w-4 h-4" />} onClick={openAdd}>Add Member</Button>}
       />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <MetricCard label="Total Monthly Cost" value={formatCurrency(metrics.totalMonthlyCost, true)} accent="red" />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+        <MetricCard label="Fixed Monthly Salaries" value={formatCurrency(metrics.totalMonthlyCost, true)} accent="red" />
         <MetricCard label="Employees" value={String(metrics.employees)} icon={<Users className="w-4 h-4" />} />
         <MetricCard label="Freelancers" value={String(metrics.freelancers)} />
         <MetricCard label="Vendors" value={String(metrics.vendors)} />
       </div>
 
-      {/* Client cost allocation summary */}
+      {/* Freelancer cost note */}
+      <div className="mb-5 flex items-start gap-3 bg-[#f0fdfa] border border-[#99f6e4] px-4 py-3">
+        <Info className="w-4 h-4 text-[#16C4BA] flex-shrink-0 mt-0.5" />
+        <p className="text-xs text-[#0d9488]">
+          <strong>Freelancer & vendor costs:</strong> Don't enter estimated monthly amounts here. Instead, when you add a bank or cash transaction for a freelancer payment, link it to a client — it automatically flows into that client's cost sheet. This gives you exact figures, not approximations.
+        </p>
+      </div>
+
+      {/* Employee cost allocation summary */}
       {clients.length > 0 && Object.keys(clientCostBreakdown).length > 0 && (
-        <Card className="mb-6">
+        <Card className="mb-5">
           <h3 className="font-['Barlow_Condensed'] font-bold text-sm uppercase tracking-wide text-[#555] mb-4">
-            <TrendingUp className="w-4 h-4 inline mr-1" />Team Cost per Client (Monthly)
+            <TrendingUp className="w-4 h-4 inline mr-1" />Employee Salary Cost per Client (Monthly)
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
             {clients.map(c => {
@@ -154,9 +137,9 @@ export function TeamMembersPage() {
                 <div key={c.id} className="p-3 bg-[#f7f7f5]">
                   <p className="text-xs font-medium text-[#555] mb-1">{c.name}</p>
                   <p className="text-sm font-bold text-[#DC2626]">{formatCurrency(cost, true)}</p>
-                  <p className="text-xs text-[#888]">of {formatCurrency(c.retainer_amount, true)}</p>
+                  <p className="text-xs text-[#888]">salary cost only</p>
                   <p className={`text-xs font-medium mt-1 ${margin >= 0 ? 'text-[#16A34A]' : 'text-[#DC2626]'}`}>
-                    {margin >= 0 ? '+' : ''}{formatCurrency(margin, true)} margin
+                    {margin >= 0 ? '+' : ''}{formatCurrency(margin, true)} after salaries
                   </p>
                 </div>
               );
@@ -182,7 +165,6 @@ export function TeamMembersPage() {
       ) : (
         <div className="border border-[#e8e8e8]">
           {filtered.map((m, i) => {
-            const avgData = (m.type === 'freelancer' || m.type === 'vendor') ? computeAvgCost(m) : null;
             const totalPct = m.client_allocations.reduce((s, a) => s + a.percentage, 0);
             return (
               <div key={m.id} className={`flex items-start justify-between px-5 py-4 ${i > 0 ? 'border-t border-[#f0f0f0]' : ''} hover:bg-[#fafafa]`}>
@@ -210,26 +192,19 @@ export function TeamMembersPage() {
                         {100 - totalPct > 0 && <span className="text-xs px-1.5 py-0.5 bg-[#f0f0f0] text-[#888]">Overhead {100 - totalPct}%</span>}
                       </div>
                     )}
-                    {/* 3-month average for freelancers/vendors */}
-                    {avgData && (
-                      <div className="mt-2 flex items-center gap-3">
-                        <span className="text-xs text-[#888]">3-mo avg from transactions:</span>
-                        <span className="text-xs font-semibold text-[#16C4BA]">
-                          {avgData.avg > 0 ? formatCurrency(avgData.avg, true) : 'No matches yet'}
-                        </span>
-                        {avgData.months.map(mo => mo.amount > 0 && (
-                          <span key={mo.month} className="text-xs text-[#aaa]">{mo.month.slice(5)}: {formatCurrency(mo.amount, true)}</span>
-                        ))}
-                      </div>
-                    )}
                     {m.skills.length > 0 && <p className="text-xs text-[#bbb] mt-1">{m.skills.join(' · ')}</p>}
+                    {(m.type === 'freelancer' || m.type === 'vendor') && (
+                      <p className="text-xs text-[#16C4BA] mt-1">Costs tracked via transaction links →</p>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-6 ml-4 flex-shrink-0">
-                  <div className="text-right">
-                    <p className="text-sm font-medium tabular-nums">{formatCurrency(m.monthly_cost)}</p>
-                    <p className="text-xs text-[#888]">{m.type === 'employee' ? 'salary' : 'approx/mo'}</p>
-                  </div>
+                  {m.type === 'employee' && (
+                    <div className="text-right">
+                      <p className="text-sm font-medium tabular-nums">{formatCurrency(m.monthly_cost)}</p>
+                      <p className="text-xs text-[#888]">salary/mo</p>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <button onClick={() => openEdit(m)} className="text-[#888] hover:text-[#070707]"><Edit2 className="w-3.5 h-3.5" /></button>
                     <button onClick={() => setDeleteId(m.id)} className="text-[#888] hover:text-[#DC2626]"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -249,12 +224,15 @@ export function TeamMembersPage() {
             <Select label="Type" value={form.type} onChange={e => setForm({ ...form, type: e.target.value as TeamMemberType })} options={TYPE_OPTIONS} />
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <Input label="Role / Designation" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} placeholder="e.g. Video Editor" />
+            <Input label="Role / Designation" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} placeholder="e.g. Video Editor, Photographer" />
             <div>
-              <Input label={form.type === 'employee' ? 'Monthly Salary (₹)' : 'Approx Monthly Cost (₹)'} type="number" value={form.monthly_cost} onChange={e => setForm({ ...form, monthly_cost: e.target.value })} placeholder="Enter base amount" />
-              {(form.type === 'freelancer' || form.type === 'vendor') && (
-                <p className="text-xs text-[#888] mt-1">For variable-pay people, enter a baseline. The app will show the actual 3-month average from your bank/cash transactions automatically.</p>
-              )}
+              <Input
+                label={form.type === 'employee' ? 'Monthly Salary (₹)' : 'Day rate / avg per project (₹)'}
+                type="number" value={form.monthly_cost}
+                onChange={e => setForm({ ...form, monthly_cost: e.target.value })}
+                placeholder="0"
+                hint={form.type !== 'employee' ? 'For reference only. Actual costs come from transaction links.' : undefined}
+              />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
@@ -263,52 +241,60 @@ export function TeamMembersPage() {
           </div>
           <Input label="Skills (comma separated)" value={form.skills} onChange={e => setForm({ ...form, skills: e.target.value })} placeholder="Reels, Photography, Editing..." />
 
-          {/* Client allocation picker */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-xs font-semibold text-[#555] uppercase tracking-wide">Client Cost Allocation</p>
-              {totalAllocated > 0 && (
-                <span className={`text-xs font-medium ${totalAllocated > 100 ? 'text-[#DC2626]' : totalAllocated === 100 ? 'text-[#16A34A]' : 'text-[#888]'}`}>
-                  {totalAllocated}% allocated · {Math.max(0, 100 - totalAllocated)}% overhead
-                </span>
-              )}
+          {/* Client allocation — employees only */}
+          {form.type === 'employee' && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-xs font-semibold text-[#555] uppercase tracking-wide">Salary Allocation per Client</p>
+                {totalAllocated > 0 && (
+                  <span className={`text-xs font-medium ${totalAllocated > 100 ? 'text-[#DC2626]' : totalAllocated === 100 ? 'text-[#16A34A]' : 'text-[#888]'}`}>
+                    {totalAllocated}% → clients · {Math.max(0, 100 - totalAllocated)}% overhead
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-[#888] mb-3">What % of this employee's salary is attributable to each client?</p>
+              <div className="space-y-1.5 mb-2">
+                {form.client_allocations.length === 0
+                  ? <p className="text-xs text-[#aaa] italic py-1">No clients added yet.</p>
+                  : form.client_allocations.map(alloc => {
+                    const client = clients.find(c => c.id === alloc.client_id);
+                    if (!client) return null;
+                    return (
+                      <div key={alloc.client_id} className="flex items-center gap-2 bg-[#f7f7f5] px-3 py-1.5">
+                        <span className="text-sm flex-1 truncate">{client.name}</span>
+                        <input type="number" min="0" max="100" value={alloc.percentage || ''}
+                          onChange={e => {
+                            const pct = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+                            setForm(f => ({ ...f, client_allocations: f.client_allocations.map(a => a.client_id === alloc.client_id ? { ...a, percentage: pct } : a) }));
+                          }}
+                          className="w-16 px-2 py-1 text-xs text-right border border-[#ddd] focus:outline-none focus:border-[#16C4BA]" />
+                        <span className="text-xs text-[#888]">%</span>
+                        <button type="button" onClick={() => setForm(f => ({ ...f, client_allocations: f.client_allocations.filter(a => a.client_id !== alloc.client_id) }))}
+                          className="text-[#ccc] hover:text-[#DC2626]"><Trash2 className="w-3 h-3" /></button>
+                      </div>
+                    );
+                  })}
+              </div>
+              <select value="" onChange={e => {
+                if (e.target.value) setForm(f => ({ ...f, client_allocations: [...f.client_allocations, { client_id: e.target.value, percentage: 0 }] }));
+              }} className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]">
+                <option value="">+ Add client...</option>
+                {clients.filter(c => c.status === 'active' && !form.client_allocations.some(a => a.client_id === c.id))
+                  .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
             </div>
-            <p className="text-xs text-[#888] mb-3">Pick clients this person works on, then set % of their cost each client bears</p>
-            <div className="space-y-1.5 mb-2">
-              {form.client_allocations.length === 0
-                ? <p className="text-xs text-[#aaa] italic py-1">No clients added yet.</p>
-                : form.client_allocations.map(alloc => {
-                  const client = clients.find(c => c.id === alloc.client_id);
-                  if (!client) return null;
-                  return (
-                    <div key={alloc.client_id} className="flex items-center gap-2 bg-[#f7f7f5] px-3 py-1.5">
-                      <span className="text-sm flex-1 truncate">{client.name}</span>
-                      <input type="number" min="0" max="100" value={alloc.percentage || ''}
-                        onChange={e => {
-                          const pct = Math.max(0, Math.min(100, Number(e.target.value) || 0));
-                          setForm(f => ({ ...f, client_allocations: f.client_allocations.map(a => a.client_id === alloc.client_id ? { ...a, percentage: pct } : a) }));
-                        }}
-                        className="w-16 px-2 py-1 text-xs text-right border border-[#ddd] focus:outline-none focus:border-[#16C4BA]" />
-                      <span className="text-xs text-[#888]">%</span>
-                      <button type="button" onClick={() => setForm(f => ({ ...f, client_allocations: f.client_allocations.filter(a => a.client_id !== alloc.client_id) }))}
-                        className="text-[#ccc] hover:text-[#DC2626]"><Trash2 className="w-3 h-3" /></button>
-                    </div>
-                  );
-                })}
+          )}
+
+          {(form.type === 'freelancer' || form.type === 'vendor') && (
+            <div className="bg-[#f0fdfa] border border-[#99f6e4] px-3 py-2 text-xs text-[#0d9488]">
+              When you pay this freelancer via bank or cash, link the transaction to the relevant client — it flows into their cost sheet automatically. No need to set up allocations here.
             </div>
-            <select value="" onChange={e => {
-              if (e.target.value) setForm(f => ({ ...f, client_allocations: [...f.client_allocations, { client_id: e.target.value, percentage: 0 }] }));
-            }} className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]">
-              <option value="">+ Add client to allocation...</option>
-              {clients.filter(c => c.status === 'active' && !form.client_allocations.some(a => a.client_id === c.id))
-                .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <Textarea label="Notes" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} />
-            <div className="flex items-center mt-6">
-              <label className="flex items-center gap-2 text-sm text-[#555] cursor-pointer">
+            <div className="flex items-center mt-5">
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" checked={form.active} onChange={e => setForm({ ...form, active: e.target.checked })} className="w-4 h-4" />
                 Currently active
               </label>

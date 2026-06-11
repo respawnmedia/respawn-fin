@@ -6,15 +6,18 @@ import { Card, MetricCard } from '@/components/ui/Card';
 import { Modal, ConfirmModal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { useToast } from '@/components/ui/ToastProvider';
+import { PaymentSuggestionDialog } from '@/components/ui/PaymentSuggestionDialog';
+import { detectClientPayment, detectSharedExpense, type PaymentSuggestion } from '@/lib/payment-detector';
 import {
   getBankStatements, addBankStatement, updateBankStatement,
   getBankTransactions, addBankTransactions,
   updateBankTransaction, deleteBankTransaction,
   getCategories, getNarrationMap, upsertNarrationMap, addAuditEntry,
-  getClients,
+  getClients, upsertClientMonthlyCost, getClientMonthlyCosts,
 } from '@/lib/storage';
 import { autoLinkToCosting } from '@/lib/auto-cost-link';
 import { formatCurrency, formatDate, currentMonth, formatMonth, monthsAgo } from '@/utils/format';
+import { addPaymentRecord } from '@/lib/payments';
 import type { BankTransaction } from '@/types';
 
 interface ExtractedTxn {
@@ -37,6 +40,8 @@ export function BankTransactionsPage() {
   const [committing, setCommitting] = useState(false);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [editForm, setEditForm] = useState({ category_id: '', reason: '', narration: '', client_id: '', purpose: '' });
+  const [paymentSuggestions, setPaymentSuggestions] = useState<PaymentSuggestion[]>([]);
+  const [currentSuggestionIdx, setCurrentSuggestionIdx] = useState(0);
 
   const categories = getCategories();
   const statements = getBankStatements();
@@ -168,6 +173,24 @@ export function BankTransactionsPage() {
     // Auto-link any client-tagged transactions to cost sheets
     newTxns.forEach(t => autoLinkToCosting(t, 'bank'));
     updateBankStatement(reviewStatementId, { status: 'committed' });
+
+    // Detect potential client payments from credit transactions
+    const creditTxns = newTxns.filter(t => t.credit > 0);
+    const suggestions: PaymentSuggestion[] = [];
+    for (const t of creditTxns) {
+      const s = detectClientPayment('', t.narration, t.narration, t.credit, t.date, 'in');
+      if (s) suggestions.push(s);
+    }
+    // Detect shared expenses from large debit transactions (production, shoots, etc.)
+    const debitTxns = newTxns.filter(t => t.debit > 1000 && !t.client_id);
+    for (const t of debitTxns) {
+      const s = detectSharedExpense('', t.narration, t.narration, t.debit, t.date);
+      if (s) suggestions.push({ ...s, match_reason: `${t.narration.slice(0, 50)} — ${s.match_reason}` });
+    }
+    if (suggestions.length > 0) {
+      setPaymentSuggestions(suggestions);
+      setCurrentSuggestionIdx(0);
+    }
     // Learn category patterns
     reviewData.forEach(t => {
       if (t.category_id) {
@@ -243,10 +266,10 @@ export function BankTransactionsPage() {
               {reviewData.map((t, idx) => (
                 <tr key={idx} className={`border-b border-[#f5f5f5] ${t.flagged ? 'bg-[#fffbeb]' : ''}`}>
                   <td className="px-4 py-2.5 text-xs text-[#666]">{t.date}</td>
-                  <td className="px-4 py-2.5 max-w-[200px]">
-                    <div className="flex items-center gap-1.5">
-                      {t.flagged && <AlertTriangle className="w-3.5 h-3.5 text-[#F59E0B] flex-shrink-0" />}
-                      <span className="text-xs truncate">{t.narration}</span>
+                  <td className="px-4 py-2.5" style={{ maxWidth: '240px' }}>
+                    <div className="flex items-start gap-1.5">
+                      {t.flagged && <AlertTriangle className="w-3.5 h-3.5 text-[#F59E0B] flex-shrink-0 mt-0.5" />}
+                      <span className="text-xs break-words leading-snug">{t.narration}</span>
                     </div>
                   </td>
                   <td className="px-4 py-2.5">
@@ -429,17 +452,19 @@ export function BankTransactionsPage() {
             ) : filteredTxns.map(t => (
               <tr key={t.id} className="border-b border-[#f5f5f5] hover:bg-[#fafafa]">
                 <td className="px-4 py-2.5 text-xs text-[#666] whitespace-nowrap">{formatDate(t.date)}</td>
-                <td className="px-4 py-2.5 max-w-[220px]">
-                  <p className="text-sm truncate">{t.narration}</p>
-                  {t.ref_no && <p className="text-xs text-[#aaa]">Ref: {t.ref_no}</p>}
+                <td className="px-4 py-2.5" style={{ maxWidth: '280px' }}>
+                  <p className="text-sm break-words leading-snug">{t.narration}</p>
+                  {t.ref_no && <p className="text-xs text-[#aaa] mt-0.5">Ref: {t.ref_no}</p>}
                 </td>
                 <td className="px-4 py-2.5">
                   <span className="text-xs px-2 py-0.5 bg-[#f0f0f0] text-[#555]">{catMap[t.category_id] || '—'}</span>
                 </td>
-                <td className="px-4 py-2.5 text-xs text-[#888] max-w-[140px] truncate">{t.reason || '—'}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-xs">{t.debit > 0 ? <span className="text-[#DC2626]">{formatCurrency(t.debit)}</span> : <span className="text-[#ccc]">—</span>}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-xs">{t.credit > 0 ? <span className="text-[#16A34A]">{formatCurrency(t.credit)}</span> : <span className="text-[#ccc]">—</span>}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-sm">{formatCurrency(t.balance)}</td>
+                <td className="px-4 py-2.5 text-xs text-[#888]" style={{ maxWidth: '180px' }}>
+                  <span className="break-words leading-snug">{t.reason || '—'}</span>
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-xs whitespace-nowrap">{t.debit > 0 ? <span className="text-[#DC2626]">{formatCurrency(t.debit)}</span> : <span className="text-[#ccc]">—</span>}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-xs whitespace-nowrap">{t.credit > 0 ? <span className="text-[#16A34A]">{formatCurrency(t.credit)}</span> : <span className="text-[#ccc]">—</span>}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-sm whitespace-nowrap">{formatCurrency(t.balance)}</td>
                 <td className="px-2 py-2.5">
                   <div className="flex items-center gap-2">
                     <button onClick={() => openEdit(t)} className="text-[#888] hover:text-[#070707]"><Edit2 className="w-3.5 h-3.5" /></button>
@@ -491,6 +516,68 @@ export function BankTransactionsPage() {
       <ConfirmModal open={!!deleteId} onClose={() => setDeleteId(null)}
         onConfirm={() => { if (deleteId) { deleteBankTransaction(deleteId); addAuditEntry({ user_id: 'founder', action: 'DELETE_BANK_TXN', entity: 'bank_transaction', entity_id: deleteId }); toast('Deleted', 'info'); setDeleteId(null); } }}
         title="Delete Transaction" message="Delete this transaction?" />
+
+      {/* Client payment/expense suggestions from bank transactions */}
+      {paymentSuggestions.length > 0 && currentSuggestionIdx < paymentSuggestions.length && (
+        <PaymentSuggestionDialog
+          suggestion={paymentSuggestions[currentSuggestionIdx]}
+          direction={paymentSuggestions[currentSuggestionIdx].direction}
+          totalAmount={paymentSuggestions[currentSuggestionIdx].suggested_amount}
+          onAccept={(slices) => {
+            const s = paymentSuggestions[currentSuggestionIdx];
+            if (s.direction === 'in') {
+              slices.forEach(slice => {
+                addPaymentRecord({
+                  client_id: slice.client_id,
+                  date: new Date().toISOString().split('T')[0],
+                  amount: slice.amount,
+                  mode: 'Bank Transfer',
+                  for_month: s.suggested_month,
+                  notes: slices.length > 1
+                    ? `Split: ${slices.length} clients, total ${formatCurrency(s.suggested_amount)}`
+                    : 'Auto-detected from bank statement',
+                });
+              });
+              toast(
+                slices.length > 1
+                  ? `Payment split across ${slices.length} clients recorded`
+                  : `Payment from ${s.client_name} recorded`,
+                'success'
+              );
+            } else {
+              // Expense — allocate to cost sheets
+              slices.forEach(slice => {
+                if (!slice.client_id) return;
+                const all = getClientMonthlyCosts();
+                const existing = all.find((c: { client_id: string; month: string }) => c.client_id === slice.client_id && c.month === s.suggested_month);
+                const newLine = {
+                  id: crypto.randomUUID(),
+                  label: slice.cost_label || 'Shared expense',
+                  planned_amount: slice.amount,
+                  actual_amount: slice.amount,
+                  category_id: slice.category_id,
+                  transaction_ids: [] as string[],
+                };
+                if (existing) {
+                  const updatedLines = [...existing.line_items, newLine];
+                  upsertClientMonthlyCost({ ...existing, line_items: updatedLines, total_cost: updatedLines.reduce((ss: number, l: { actual_amount: number }) => ss + l.actual_amount, 0) });
+                } else {
+                  upsertClientMonthlyCost({ client_id: slice.client_id, month: s.suggested_month, line_items: [newLine], total_cost: slice.amount });
+                }
+              });
+              toast(`Expense allocated to ${slices.length} client cost sheet${slices.length > 1 ? 's' : ''}`, 'success');
+            }
+            const next = currentSuggestionIdx + 1;
+            setCurrentSuggestionIdx(next);
+            if (next >= paymentSuggestions.length) setPaymentSuggestions([]);
+          }}
+          onDismiss={() => {
+            const next = currentSuggestionIdx + 1;
+            setCurrentSuggestionIdx(next);
+            if (next >= paymentSuggestions.length) setPaymentSuggestions([]);
+          }}
+        />
+      )}
     </div>
   );
 }

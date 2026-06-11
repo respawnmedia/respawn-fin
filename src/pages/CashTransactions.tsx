@@ -7,6 +7,8 @@ import { Card, MetricCard } from '@/components/ui/Card';
 import { Modal, ConfirmModal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/ToastProvider';
 import { NotebookImport } from '@/components/ui/NotebookImport';
+import { PaymentSuggestionDialog } from '@/components/ui/PaymentSuggestionDialog';
+import { detectClientPayment, type PaymentSuggestion } from '@/lib/payment-detector';
 import {
   getCashTransactions, addCashTransaction, updateCashTransaction,
   deleteCashTransaction, getCategories, computeCashBalance,
@@ -14,6 +16,7 @@ import {
 } from '@/lib/storage';
 import { autoLinkToCosting } from '@/lib/auto-cost-link';
 import { formatCurrency, formatDate, currentMonth } from '@/utils/format';
+import { addPaymentRecord } from '@/lib/payments';
 import type { CashTransaction, CashType } from '@/types';
 
 const VERTICALS = [
@@ -46,6 +49,7 @@ export function CashTransactionsPage() {
   const toast = useToast();
   const [modalOpen, setModalOpen] = useState(false);
   const [notebookModal, setNotebookModal] = useState(false);
+  const [paymentSuggestion, setPaymentSuggestion] = useState<PaymentSuggestion | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [filterMonth, setFilterMonth] = useState(currentMonth());
@@ -171,6 +175,20 @@ export function CashTransactionsPage() {
       const t = addCashTransaction(payload);
       autoLinkToCosting(t, 'cash');
       addAuditEntry({ user_id: 'founder', action: 'ADD_CASH_TXN', entity: 'cash_transaction', entity_id: t.id });
+
+      // Auto-detect if this looks like a client payment
+      if (form.type === 'Cash In') {
+        const suggestion = detectClientPayment(
+          form.party,
+          form.description,
+          '',
+          Number(form.amount),
+          form.date,
+        );
+        if (suggestion) {
+          setPaymentSuggestion(suggestion);
+        }
+      }
       if (form.gst_applies) {
         toast(`Added ₹${Number(form.amount).toLocaleString()} (incl. ₹${gstAmount.toFixed(0)} GST)`, 'success');
       } else {
@@ -269,12 +287,14 @@ export function CashTransactionsPage() {
                   <td className="px-4 py-2.5">
                     <span className={`text-xs px-1.5 py-0.5 font-medium ${t.type === 'Cash In' ? 'bg-[#dcfce7] text-[#16A34A]' : 'bg-[#fee2e2] text-[#DC2626]'}`}>{t.type}</span>
                   </td>
-                  <td className="px-4 py-2.5 max-w-[180px]">
-                    <p className="text-sm truncate">{t.description || t.party}</p>
-                    <p className="text-xs text-[#888]">{t.party}</p>
+                  <td className="px-4 py-2.5" style={{ maxWidth: '200px' }}>
+                    <p className="text-sm break-words leading-snug">{t.description || t.party}</p>
+                    <p className="text-xs text-[#888]">{t.party !== (t.description || t.party) ? t.party : ''}</p>
                   </td>
                   <td className="px-4 py-2.5 text-xs text-[#555]">{categories.find(c => c.id === t.category_id)?.name || '—'}</td>
-                  <td className="px-4 py-2.5 text-xs text-[#888] max-w-[120px] truncate">{t.reason || '—'}</td>
+                  <td className="px-4 py-2.5 text-xs text-[#888]" style={{ maxWidth: '160px' }}>
+                    <span className="break-words leading-snug">{t.reason || '—'}</span>
+                  </td>
                   <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${t.type === 'Cash In' ? 'text-[#16A34A]' : 'text-[#DC2626]'}`}>
                     {t.type === 'Cash In' ? '+' : '-'}{formatCurrency(t.amount)}
                   </td>
@@ -388,6 +408,36 @@ export function CashTransactionsPage() {
         title="Scan Notebook" width="lg">
         <NotebookImport onDone={() => { setNotebookModal(false); toast('Transactions imported from notebook', 'success'); }} />
       </Modal>
+
+      {/* Client payment suggestion popup */}
+      {paymentSuggestion && (
+        <PaymentSuggestionDialog
+          suggestion={paymentSuggestion}
+          direction="in"
+          totalAmount={paymentSuggestion.suggested_amount}
+          onAccept={(slices) => {
+            // For each slice, record a payment in Client Payments
+            slices.forEach(slice => {
+              addPaymentRecord({
+                client_id: slice.client_id,
+                date: new Date().toISOString().split('T')[0],
+                amount: slice.amount,
+                mode: 'Cash',
+                for_month: paymentSuggestion.suggested_month,
+                notes: slices.length > 1 ? `Split: ${slices.length} clients, total ${formatCurrency(paymentSuggestion.suggested_amount)}` : 'Auto-detected from cash entry',
+              });
+            });
+            toast(
+              slices.length > 1
+                ? `Payment split across ${slices.length} clients recorded`
+                : `Payment from ${paymentSuggestion.client_name} recorded in Client Payments`,
+              'success'
+            );
+            setPaymentSuggestion(null);
+          }}
+          onDismiss={() => setPaymentSuggestion(null)}
+        />
+      )}
     </div>
   );
 }

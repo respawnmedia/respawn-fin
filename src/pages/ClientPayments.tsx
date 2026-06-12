@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, AlertTriangle, DollarSign, TrendingUp, CreditCard, CheckCircle } from 'lucide-react';
+import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, AlertTriangle, DollarSign, TrendingUp, CreditCard, CheckCircle, Search, Loader2 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/Layout';
 import { Button } from '@/components/ui/Button';
 import { Input, Select, Textarea } from '@/components/ui/Input';
@@ -16,6 +16,7 @@ import {
   getCategories, addAuditEntry,
 } from '@/lib/storage';
 import { getPaymentRecords, addPaymentRecord, deletePaymentRecord, getPaymentsByClient, getTotalPaidByClient, type PaymentRecord } from '@/lib/payments';
+import { scanExistingForClientPayments, markScanned, type ScanResult } from '@/lib/scan-existing';
 import { formatCurrency, formatDate, generateInvoiceNo, currentMonth, formatMonth } from '@/utils/format';
 import type { Client, Invoice, BillingCycle, PaymentMethod, InvoiceStatus, ClientCostItem, ClientMonthlyCostLine } from '@/types';
 
@@ -43,6 +44,78 @@ const INVOICE_STATUS_OPTIONS: { value: InvoiceStatus; label: string }[] = [
   { value: 'Overdue', label: 'Overdue' },
 ];
 
+// -- Scan Result Row ----------------------------------------------------------
+interface ScanResultRowProps {
+  result: ScanResult;
+  isAccepted: boolean;
+  onAccept: (result: ScanResult, forMonth: string, mode: PaymentMethod) => void;
+}
+
+function ScanResultRow({ result, isAccepted, onAccept }: ScanResultRowProps) {
+  const [forMonth, setForMonth] = React.useState(result.date.slice(0, 7));
+  const [mode, setMode] = React.useState<PaymentMethod>(result.source === 'bank' ? 'Bank Transfer' : 'Cash');
+
+  if (isAccepted) {
+    return (
+      <div className="flex items-center gap-3 px-3 py-3 bg-[#f0fdf4] border border-[#bbf7d0]">
+        <CheckCircle className="w-4 h-4 text-[#16A34A] flex-shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-[#16A34A]">Recorded — {result.client_name}</p>
+          <p className="text-xs text-[#888]">{formatCurrency(result.amount)} · {formatMonth(forMonth)}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-[#e8e8e8] hover:border-[#16C4BA] px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="font-semibold text-sm text-[#070707]">{result.client_name}</span>
+            <span className={`text-[10px] font-medium px-1.5 py-0.5 ${
+              result.confidence === 'high' ? 'bg-[#dcfce7] text-[#16A34A]' : 'bg-[#fef3c7] text-[#d97706]'
+            }`}>
+              {result.confidence}
+            </span>
+            <span className="text-[10px] text-[#888] bg-[#f0f0f0] px-1.5 py-0.5">{result.source}</span>
+          </div>
+          <p className="text-xs text-[#555] break-words leading-snug">{result.narration}</p>
+          <p className="text-xs text-[#888] mt-0.5">{formatDate(result.date)} · {result.match_reason}</p>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="text-sm font-bold tabular-nums text-[#16A34A]">{formatCurrency(result.amount)}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-[#f0f0f0]">
+        <select value={forMonth} onChange={e => setForMonth(e.target.value)}
+          className="px-2 py-1.5 text-xs border border-[#ddd] focus:outline-none focus:border-[#16C4BA]">
+          {[0, 1, 2, 3].map(i => {
+            const d = new Date();
+            d.setMonth(d.getMonth() - i);
+            const m = d.toISOString().slice(0, 7);
+            return <option key={m} value={m}>{formatMonth(m)}</option>;
+          })}
+        </select>
+        <select value={mode} onChange={e => setMode(e.target.value as PaymentMethod)}
+          className="px-2 py-1.5 text-xs border border-[#ddd] focus:outline-none focus:border-[#16C4BA]">
+          <option value="Bank Transfer">Bank Transfer</option>
+          <option value="UPI">UPI</option>
+          <option value="Cash">Cash</option>
+          <option value="Cheque">Cheque</option>
+        </select>
+        <button onClick={() => onAccept(result, forMonth, mode)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-[#16C4BA] text-[#070707] hover:bg-[#13b0a7]">
+          <CheckCircle className="w-3.5 h-3.5" />
+          Accept
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 export function ClientPaymentsPage() {
   const toast = useToast();
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
@@ -51,6 +124,10 @@ export function ClientPaymentsPage() {
   const [invoiceModal, setInvoiceModal] = useState<string | null>(null);
   const [costModal, setCostModal] = useState<{ clientId: string; month: string } | null>(null);
   const [addVerticalModal, setAddVerticalModal] = useState(false);
+  const [scanModal, setScanModal] = useState(false);
+  const [scanResults, setScanResults] = useState<ScanResult[]>([]);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [acceptedIds, setAcceptedIds] = useState<Set<string>>(new Set());
   const [paymentModal, setPaymentModal] = useState<string | null>(null); // client id
   const [paymentForm, setPaymentForm] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -76,7 +153,7 @@ export function ClientPaymentsPage() {
   const verticalOptions = verticals.map(v => ({ value: v.id, label: v.label }));
   const categoryOptions = categories.map(c => ({ value: c.id, label: c.name }));
 
-  // ── Client form ────────────────────────────────────────────────────────────
+  // -- Client form ------------------------------------------------------------
   const emptyClientForm = {
     name: '', vertical: 'restaurants', retainer_amount: '',
     billing_cycle: 'monthly' as BillingCycle, payment_method: 'UPI' as PaymentMethod,
@@ -87,17 +164,17 @@ export function ClientPaymentsPage() {
   const [clientForm, setClientForm] = useState(emptyClientForm);
   const [newCostItem, setNewCostItem] = useState({ label: '', estimated_amount: '', category_id: '', is_variable: false });
 
-  // ── Invoice form ───────────────────────────────────────────────────────────
+  // -- Invoice form -----------------------------------------------------------
   const [invoiceForm, setInvoiceForm] = useState({
     invoice_date: new Date().toISOString().split('T')[0],
     due_date: '', amount: '', gst_rate: '18', notes: '', status: 'Sent' as InvoiceStatus,
   });
 
-  // ── Cost sheet form ────────────────────────────────────────────────────────
+  // -- Cost sheet form --------------------------------------------------------
   const [costForm, setCostForm] = useState<ClientMonthlyCostLine[]>([]);
   const [costNotes, setCostNotes] = useState('');
 
-  // ── Metrics ───────────────────────────────────────────────────────────────
+  // -- Metrics ---------------------------------------------------------------
   const metrics = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
     const activeClients = clients.filter(c => c.status === 'active');
@@ -120,7 +197,7 @@ export function ClientPaymentsPage() {
     };
   }, [clients, invoices, monthlyCosts]);
 
-  // ── Vertical management ────────────────────────────────────────────────────
+  // -- Vertical management ----------------------------------------------------
   function handleAddVertical() {
     if (!newVerticalLabel.trim()) return;
     const id = newVerticalLabel.trim().toLowerCase().replace(/\s+/g, '_');
@@ -129,7 +206,7 @@ export function ClientPaymentsPage() {
     toast(`Vertical "${newVerticalLabel}" added`, 'success');
   }
 
-  // ── Client CRUD ────────────────────────────────────────────────────────────
+  // -- Client CRUD ------------------------------------------------------------
   function openAddClient() {
     setClientForm(emptyClientForm);
     setEditingClient(null);
@@ -178,7 +255,7 @@ export function ClientPaymentsPage() {
     setClientModal(false);
   }
 
-  // ── Invoice CRUD ───────────────────────────────────────────────────────────
+  // -- Invoice CRUD -----------------------------------------------------------
   function openAddInvoice(clientId: string) {
     setInvoiceForm({ invoice_date: new Date().toISOString().split('T')[0], due_date: '', amount: '', gst_rate: '18', notes: '', status: 'Sent' });
     setEditingInvoice(null);
@@ -208,7 +285,7 @@ export function ClientPaymentsPage() {
     setInvoiceModal(null);
   }
 
-  // ── Monthly cost sheet ─────────────────────────────────────────────────────
+  // -- Monthly cost sheet -----------------------------------------------------
   function openCostSheet(clientId: string, month: string) {
     const client = clients.find(c => c.id === clientId);
     const existing = monthlyCosts.find(c => c.client_id === clientId && c.month === month);
@@ -263,7 +340,31 @@ export function ClientPaymentsPage() {
     setPaymentForm({ date: new Date().toISOString().split('T')[0], amount: '', mode: 'Bank Transfer', for_month: currentMonth(), notes: '' });
   }
 
-  function getClientInvoices(clientId: string) {
+  function runScan() {
+    setScanLoading(true);
+    setScanModal(true);
+    // small delay so modal opens first
+    setTimeout(() => {
+      const results = scanExistingForClientPayments();
+      setScanResults(results);
+      setScanLoading(false);
+    }, 300);
+  }
+
+  function acceptScanResult(result: ScanResult, forMonth: string, mode: PaymentMethod) {
+    addPaymentRecord({
+      client_id: result.client_id,
+      date: result.date,
+      amount: result.amount,
+      mode,
+      for_month: forMonth,
+      notes: `Auto-detected from ${result.source} transaction`,
+    });
+    setAcceptedIds(prev => new Set([...prev, result.id]));
+    toast(`Payment from ${result.client_name} recorded`, 'success');
+  }
+
+  function getClientInvoices(clientId: string): Invoice[] {
     return invoices.filter(i => i.client_id === clientId).sort((a, b) => new Date(b.invoice_date).getTime() - new Date(a.invoice_date).getTime());
   }
   function getClientMonths(clientId: string): string[] {
@@ -281,6 +382,9 @@ export function ClientPaymentsPage() {
         subtitle="Revenue, invoicing, cost tracking per client"
         actions={
           <div className="flex gap-2">
+            <Button variant="secondary" size="sm" icon={<Search className="w-3.5 h-3.5" />} onClick={runScan}>
+              Scan Transactions
+            </Button>
             <Button variant="secondary" size="sm" onClick={() => setAddVerticalModal(true)}>+ Vertical</Button>
             <Button variant="primary" icon={<Plus className="w-4 h-4" />} onClick={openAddClient}>Add Client</Button>
           </div>
@@ -501,7 +605,7 @@ export function ClientPaymentsPage() {
         </div>
       )}
 
-      {/* ── Add Vertical Modal ── */}
+      {/* -- Add Vertical Modal -- */}
       <Modal open={addVerticalModal} onClose={() => setAddVerticalModal(false)} title="Manage Verticals" width="sm"
         footer={<Button variant="ghost" onClick={() => setAddVerticalModal(false)}>Done</Button>}>
         <div className="space-y-4">
@@ -525,7 +629,7 @@ export function ClientPaymentsPage() {
         </div>
       </Modal>
 
-      {/* ── Add/Edit Client Modal ── */}
+      {/* -- Add/Edit Client Modal -- */}
       <Modal open={clientModal} onClose={() => setClientModal(false)}
         title={editingClient ? 'Edit Client' : 'Add Client'} width="xl"
         footer={<>
@@ -595,7 +699,7 @@ export function ClientPaymentsPage() {
         </div>
       </Modal>
 
-      {/* ── Invoice Modal ── */}
+      {/* -- Invoice Modal -- */}
       <Modal open={!!invoiceModal} onClose={() => setInvoiceModal(null)} title={editingInvoice ? 'Edit Invoice' : 'New Invoice'}
         footer={<>
           <Button variant="ghost" onClick={() => setInvoiceModal(null)}>Cancel</Button>
@@ -621,7 +725,7 @@ export function ClientPaymentsPage() {
         </div>
       </Modal>
 
-      {/* ── Monthly Cost Sheet Modal ── */}
+      {/* -- Monthly Cost Sheet Modal -- */}
       <Modal open={!!costModal} onClose={() => setCostModal(null)}
         title={costModal ? `Cost Sheet — ${formatMonth(costModal.month)}` : 'Cost Sheet'} width="lg"
         footer={<>
@@ -674,7 +778,7 @@ export function ClientPaymentsPage() {
         })()}
       </Modal>
 
-      {/* ── Payment Record Modal ── */}
+      {/* -- Payment Record Modal -- */}
       <Modal open={!!paymentModal} onClose={() => setPaymentModal(null)} title="Record Payment Received" width="sm"
         footer={<>
           <Button variant="ghost" onClick={() => setPaymentModal(null)}>Cancel</Button>
@@ -717,6 +821,41 @@ export function ClientPaymentsPage() {
       <ConfirmModal open={!!deleteInvoiceId} onClose={() => setDeleteInvoiceId(null)}
         onConfirm={() => { if (deleteInvoiceId) { deleteInvoice(deleteInvoiceId); toast('Invoice deleted', 'info'); setDeleteInvoiceId(null); } }}
         title="Delete Invoice" message="Delete this invoice?" />
+
+      {/* Scan existing transactions modal */}
+      <Modal open={scanModal} onClose={() => setScanModal(false)} title="Scan Transactions for Client Payments" width="xl"
+        footer={<Button variant="ghost" onClick={() => setScanModal(false)}>Done</Button>}>
+        {scanLoading ? (
+          <div className="flex items-center justify-center py-12 gap-3">
+            <Loader2 className="w-5 h-5 animate-spin text-[#16C4BA]" />
+            <p className="text-sm text-[#888]">Scanning all transactions for client payments...</p>
+          </div>
+        ) : scanResults.length === 0 ? (
+          <div className="text-center py-10">
+            <CheckCircle className="w-10 h-10 text-[#16A34A] mx-auto mb-3" />
+            <p className="text-sm font-medium text-[#555]">No unrecorded client payments found</p>
+            <p className="text-xs text-[#aaa] mt-1">All transactions that match client names have already been recorded, or no matches were found.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="bg-[#f0fdfa] border border-[#99f6e4] px-3 py-2 text-xs text-[#0d9488]">
+              Found <strong>{scanResults.filter(r => !r.alreadyRecorded && !acceptedIds.has(r.id)).length}</strong> unrecorded transaction{scanResults.length !== 1 ? 's' : ''} that look like client payments.
+              Accept the ones that are correct — they'll be added to the Payments tab for each client.
+            </div>
+            {scanResults.filter(r => !r.alreadyRecorded).map(result => {
+              const isAccepted = acceptedIds.has(result.id);
+              return (
+                <ScanResultRow
+                  key={result.id}
+                  result={result}
+                  isAccepted={isAccepted}
+                  onAccept={acceptScanResult}
+                />
+              );
+            })}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

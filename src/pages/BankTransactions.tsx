@@ -7,6 +7,7 @@ import { Modal, ConfirmModal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { useToast } from '@/components/ui/ToastProvider';
 import { PaymentSuggestionDialog } from '@/components/ui/PaymentSuggestionDialog';
+import { ClientSplitAllocator, type ClientSlice } from '@/components/ui/ClientSplitAllocator';
 import { detectClientPayment, detectSharedExpense, type PaymentSuggestion } from '@/lib/payment-detector';
 import {
   getBankStatements, addBankStatement, updateBankStatement,
@@ -478,14 +479,22 @@ export function BankTransactionsPage() {
       </div>
 
       {/* Edit modal */}
-      <Modal open={!!editTxn} onClose={() => setEditTxn(null)} title="Edit Transaction" width="md"
+      <Modal open={!!editTxn} onClose={() => setEditTxn(null)} title="Edit Transaction" width="lg"
         footer={<><Button variant="ghost" onClick={() => setEditTxn(null)}>Cancel</Button><Button variant="primary" onClick={saveEdit}>Save & Learn</Button></>}>
         {editTxn && (
           <div className="space-y-4">
-            <div className="bg-[#f7f7f5] px-3 py-2 text-sm">
-              <p className="text-[#555]">{editTxn.narration}</p>
-              <p className="text-xs text-[#888] mt-0.5">{formatDate(editTxn.date)} · {editTxn.debit > 0 ? <span className="text-[#DC2626]">-{formatCurrency(editTxn.debit)}</span> : <span className="text-[#16A34A]">+{formatCurrency(editTxn.credit)}</span>}</p>
+            {/* Transaction summary */}
+            <div className="bg-[#f7f7f5] px-3 py-2.5 text-sm border-l-4 border-[#16C4BA]">
+              <p className="text-[#333] font-medium break-words leading-snug">{editTxn.narration}</p>
+              <p className="text-xs text-[#888] mt-1">
+                {formatDate(editTxn.date)} ·{' '}
+                {editTxn.debit > 0
+                  ? <span className="text-[#DC2626] font-semibold">-{formatCurrency(editTxn.debit)}</span>
+                  : <span className="text-[#16A34A] font-semibold">+{formatCurrency(editTxn.credit)}</span>}
+              </p>
             </div>
+
+            {/* Category */}
             <div>
               <label className="text-xs font-medium text-[#555] uppercase tracking-wide block mb-1">Category</label>
               <select value={editForm.category_id} onChange={e => setEditForm({ ...editForm, category_id: e.target.value })}
@@ -493,21 +502,77 @@ export function BankTransactionsPage() {
                 <option value="">Select category</option>
                 {catOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
-              <p className="text-xs text-[#888] mt-1">Remembered for similar narrations next time.</p>
+              <p className="text-xs text-[#aaa] mt-1">Remembered for similar narrations next time.</p>
             </div>
-            <div>
-              <label className="text-xs font-medium text-[#555] uppercase tracking-wide block mb-1">Link to Client → auto-updates cost sheet</label>
-              <select value={editForm.client_id} onChange={e => setEditForm({ ...editForm, client_id: e.target.value })}
-                className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]">
-                <option value="">Not client-specific</option>
-                {getClients().filter(c => c.status === 'active').map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
+
+            {/* Purpose */}
             <div>
               <label className="text-xs font-medium text-[#555] uppercase tracking-wide block mb-1">Purpose / Reason</label>
               <input value={editForm.reason} onChange={e => setEditForm({ ...editForm, reason: e.target.value })}
                 placeholder="e.g. Shoot for Tissera June, Ravi's retainer, Travel for client visit"
                 className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]" />
+            </div>
+
+            {/* Client allocation section */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-medium text-[#555] uppercase tracking-wide">
+                  {editTxn.debit > 0 ? 'Allocate cost to client(s)' : 'Link payment to client(s)'}
+                </label>
+                <span className="text-[10px] text-[#888]">
+                  {editTxn.debit > 0 ? 'Updates cost sheets' : 'Records in Client Payments'}
+                </span>
+              </div>
+
+              {/* Single client quick-link */}
+              <div className="mb-2">
+                <select value={editForm.client_id} onChange={e => setEditForm({ ...editForm, client_id: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-[#ddd] focus:outline-none focus:border-[#16C4BA]">
+                  <option value="">Single client (or split below)</option>
+                  {getClients().filter(c => c.status === 'active').map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <p className="text-[10px] text-[#aaa] mt-0.5">Pick one client above, OR split across multiple clients below</p>
+              </div>
+
+              {/* Multi-client split allocator */}
+              <div className="border border-dashed border-[#e0e0e0] p-3">
+                <p className="text-xs font-medium text-[#555] mb-2">
+                  Multi-client split
+                  {editTxn.debit > 0
+                    ? ` — ₹${editTxn.debit.toLocaleString('en-IN')} shared across clients`
+                    : ` — ₹${editTxn.credit.toLocaleString('en-IN')} received from multiple`}
+                </p>
+                <ClientSplitAllocator
+                  totalAmount={editTxn.debit > 0 ? editTxn.debit : editTxn.credit}
+                  forMonth={editTxn.date.slice(0, 7)}
+                  direction={editTxn.debit > 0 ? 'out' : 'in'}
+                  transactionId={editTxn.id}
+                  showSaveButton={true}
+                  initialClientId={editForm.client_id || undefined}
+                  onSave={(slices: ClientSlice[], month: string, mode: 'UPI' | 'Bank Transfer' | 'Cash' | 'Cheque') => {
+                    if (editTxn.credit > 0) {
+                      // Incoming payment — record in Client Payments
+                      slices.forEach((slice: ClientSlice) => {
+                        addPaymentRecord({
+                          client_id: slice.client_id,
+                          date: editTxn.date,
+                          amount: slice.amount,
+                          mode,
+                          for_month: month,
+                          notes: slices.length > 1
+                            ? `Split payment (total ${formatCurrency(editTxn.credit)})`
+                            : 'Linked from bank transaction',
+                        });
+                      });
+                      toast(`Payment recorded for ${slices.length} client${slices.length > 1 ? 's' : ''}`, 'success');
+                    } else {
+                      // Outgoing expense — cost sheets already written inside ClientSplitAllocator
+                      toast(`Cost allocated to ${slices.length} client cost sheet${slices.length > 1 ? 's' : ''}`, 'success');
+                    }
+                    setEditTxn(null);
+                  }}
+                />
+              </div>
             </div>
           </div>
         )}
